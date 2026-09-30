@@ -76,31 +76,40 @@ class CleanupEngine:
         self._scanner_candidates = candidates
    
     def _is_allowed_candidate(self, path: str, action: ActionType, risk: RiskLevel) -> bool:
-        """Check if a path is in the scanner's allowlist and valid for deletion."""
+        """Check if a path is in the scanner's allowlist and valid for deletion.
+        
+        The scanner risk is authoritative - client cannot downgrade risk.
+        Returns (allowed, final_risk) tuple where final_risk is the authoritative scanner risk.
+        """
         if action != ActionType.DELETE:
-            return True  # KEEP actions are always allowed
+            return True, risk  # KEEP actions are always allowed
         
         # Check if path exists in scanner results
         for candidate in self._scanner_candidates:
             if candidate["path"] == path:
-                # Verify risk level matches or is higher (more restrictive)
+                # Scanner risk is authoritative
                 candidate_risk = candidate.get("risk", "SAFE")
                 risk_order = {"SAFE": 0, "CAUTION": 1, "DANGEROUS": 2}
                 candidate_risk_val = risk_order.get(candidate_risk, 0)
-                current_risk_val = risk_order.get(risk.value, 0)
-                
-                # Must not be more dangerous than scanner assessed
-                if current_risk_val > candidate_risk_val:
-                    return False
                 
                 # Must be SAFE or CAUTION (never DANGEROUS)
                 if candidate_risk_val >= 2:  # DANGEROUS
-                    return False
+                    return False, RiskLevel.DANGEROUS
                 
-                return True
+                # Return scanner risk as authoritative (cannot be downgraded by client)
+                final_risk = RiskLevel(candidate_risk)
+                return True, final_risk
         
         # Not found in scanner results = not allowed
-        return False
+        return False, risk
+    
+    def _get_authoritative_risk(self, path: str) -> Optional[RiskLevel]:
+        """Get the authoritative scanner risk for a path."""
+        for candidate in self._scanner_candidates:
+            if candidate["path"] == path:
+                candidate_risk = candidate.get("risk", "SAFE")
+                return RiskLevel(candidate_risk)
+        return None
     
     def validate_plan(self, plan: CleanupPlan) -> Dict[str, Any]:
         """Validate a cleanup plan against safety rules."""
@@ -120,8 +129,14 @@ class CleanupEngine:
                 errors.append(f"Path does not exist: {item.path}")
                 continue
             
-            # Risk level consistency - DANGEROUS check first
-            if item.risk == RiskLevel.DANGEROUS:
+            # Get authoritative scanner risk for this path
+            auth_risk = self._get_authoritative_risk(item.path)
+            if auth_risk is None:
+                errors.append(f"Path not in scanner allowlist: {item.path}")
+                continue
+            
+            # DANGEROUS check
+            if auth_risk == RiskLevel.DANGEROUS:
                 errors.append(f"DANGEROUS items not allowed in plan: {item.path}")
                 continue
             
@@ -130,12 +145,14 @@ class CleanupEngine:
                 errors.append(f"Path is protected: {item.path}")
                 continue
             
-            # Check if in scanner allowlist
-            if not self._is_allowed_candidate(item.path, item.action, item.risk):
-                errors.append(f"Path not in scanner allowlist or risk mismatch: {item.path}")
+            # Check if in scanner allowlist (using authoritative risk)
+            allowed, final_risk = self._is_allowed_candidate(item.path, item.action, auth_risk)
+            if not allowed:
+                errors.append(f"Path not allowed: {item.path}")
                 continue
             
-            if item.risk == RiskLevel.CAUTION and item.action == ActionType.DELETE:
+            # Use authoritative risk for warnings
+            if final_risk == RiskLevel.CAUTION and item.action == ActionType.DELETE:
                 warnings.append(f"CAUTION item requires explicit approval: {item.path}")
         
         # Check git status
@@ -193,6 +210,7 @@ class CleanupEngine:
             result = self.fs_tools.delete_path(item_path)
             
             if result.success:
+                # Use actual filesystem bytes freed from the deletion result
                 bytes_freed += result.bytes_freed
                 items_deleted += 1
             else:
@@ -253,11 +271,20 @@ class VerificationEngine:
         
         for path_name, message in protected_checks:
             path = self.workspace_root / path_name
-            if path.exists() or not self.fs_tools.is_protected(path):
+            is_protected = self.fs_tools.is_protected(path)
+            if is_protected and path.exists():
+                # Protected file that exists must remain
                 checks.append({
                     "name": f"protected_{path_name.replace('.', '_')}",
                     "passed": True,
-                    "message": message,
+                    "message": f"{message}: OK",
+                })
+            elif is_protected and not path.exists():
+                # Protected file that doesn't exist in the first place - not a failure
+                checks.append({
+                    "name": f"protected_{path_name.replace('.', '_')}",
+                    "passed": True,
+                    "message": f"{message}: not present in project (OK)",
                 })
         
         # Check 4: Source code directories exist

@@ -30,6 +30,9 @@ from cleanup.engine import (
 )
 from ai.routes import ai_analyze
 from ai.routes import AnalyzeRequest
+from ai.provider import RecordingTestProvider
+from ai.factory import get_ai_provider, reset_ai_provider
+import asyncio
 
 
 class TestProjectDetection:
@@ -318,8 +321,10 @@ class TestCleanupEngine:
             (src_dir / "main.js").write_bytes(b"x" * 1000)
             
             engine = CleanupEngine(root)
+            # Include src in scanner candidates with DANGEROUS risk to test the DANGEROUS rejection
             engine.set_scanner_candidates([
-                {"path": "node_modules", "risk": "SAFE", "size_bytes": 1000}
+                {"path": "node_modules", "risk": "SAFE", "size_bytes": 1000},
+                {"path": "src", "risk": "DANGEROUS", "size_bytes": 1000},
             ])
             
             plan = CleanupPlan(items=[
