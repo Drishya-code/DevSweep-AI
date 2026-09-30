@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 import json
 
 
@@ -140,3 +140,44 @@ class MockProvider(AIProvider):
                 "total_safe_recovery_bytes": 2306000000,
             }
         return {"result": "mock structured response"}
+
+
+class RecordingTestProvider(AIProvider):
+    """Test provider that records whether structured_completion was called and returns configurable results."""
+    
+    def __init__(self, model_name: str = "test-model", structured_response: Optional[dict] = None):
+        self._model_name = model_name
+        self._structured_response = structured_response or {}
+        self.structured_completion_called = False
+        self.last_messages: Optional[list[ChatMessage]] = None
+        self.last_schema: Optional[dict] = None
+    
+    @property
+    def provider_name(self) -> str:
+        return "test"
+    
+    @property
+    def model_name(self) -> str:
+        return self._model_name
+    
+    async def chat_completion(
+        self,
+        messages: list[ChatMessage],
+        tools: Optional[list] = None,
+        tool_choice: Optional[str] = None,
+        temperature: float = 0.1,
+        max_tokens: int = 4096,
+    ) -> AIResponse:
+        return AIResponse(content="Test response", model=self._model_name)
+    
+    async def structured_completion(
+        self,
+        messages: list[ChatMessage],
+        response_schema: dict,
+        temperature: float = 0.1,
+        max_tokens: int = 4096,
+    ) -> dict:
+        self.structured_completion_called = True
+        self.last_messages = messages
+        self.last_schema = response_schema
+        return self._structured_response
