@@ -154,7 +154,20 @@ async def execute_cleanup(request: ExecuteCleanupRequest):
     plan = plan_data["plan"]
     project_path = Path(plan_data["project_path"])
     
+    # Get fresh scanner candidates for allowlist validation
+    analysis = analyze_project(project_path)
+    scanner_candidates = [
+        {
+            "path": c.path,
+            "risk": c.risk.value,
+            "reason": c.reason,
+            "size_bytes": c.size_bytes,
+        }
+        for c in analysis.cleanup_candidates
+    ]
+    
     engine = CleanupEngine(project_path)
+    engine.set_scanner_candidates(scanner_candidates)
     result = engine.execute_plan(plan, approved=request.approved)
     
     return ExecuteCleanupResponse(
@@ -226,24 +239,29 @@ async def generate_plan_from_scan(request: dict, default_risk_level: str = "SAFE
     if not project_path:
         raise HTTPException(status_code=422, detail="project_path is required")
     
-    # Analyze project
+    # Analyze project with AI
+    from ai.routes import ai_analyze
+    from ai.routes import AnalyzeRequest
+    
+    # Run the AI analysis
+    analyze_request = AnalyzeRequest(project_path=project_path)
+    analysis = await ai_analyze(analyze_request)
+    
+    # Generate plan from AI-analyzed candidates
     path = Path(project_path).resolve()
     if not path.exists():
         raise HTTPException(status_code=404, detail="Project path not found")
     
-    analysis = analyze_project(path)
-    
-    # Generate plan
     generator = PlanGenerator(path)
     plan = generator.generate_plan(
         [
             {
-                "path": c.path,
-                "risk": c.risk.value,
-                "reason": c.reason,
-                "size_bytes": c.size_bytes,
+                "path": c["path"],
+                "risk": c["risk"],
+                "reason": c["reason"],
+                "size_bytes": c["size_bytes"],
             }
-            for c in analysis.cleanup_candidates
+            for c in analysis.candidates if c["action"] == "DELETE"
         ],
         default_risk_level=RiskLevel(default_risk_level),
     )

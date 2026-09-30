@@ -534,7 +534,22 @@ def analyze_project(path: Path) -> ProjectAnalysis:
     package_manager = detect_package_manager(path, project_type)
     language = detect_language(path, project_type)
     has_git = (path / ".git").exists()
-    git_clean = True  # Simplified - would check git status in real implementation
+    
+    # Real git status check
+    git_clean = True
+    if has_git:
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=path,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            git_clean = len(result.stdout.strip()) == 0
+        except Exception:
+            git_clean = True  # Default to clean if git check fails
 
     candidates = find_cleanup_candidates(path, project_type)
     total_recoverable = sum(c.size_bytes for c in candidates if c.risk in (RiskLevel.SAFE, RiskLevel.CAUTION))
