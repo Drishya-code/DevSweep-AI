@@ -91,8 +91,12 @@ async def get_config():
 
 # Import and include routers
 from scanner.routes import router as scanner_router
+from cleanup.routes import router as cleanup_router
+from ai.routes import router as ai_router
 
 app.include_router(scanner_router, prefix="/api/scan", tags=["scanner"])
+app.include_router(cleanup_router, prefix="/api/cleanup", tags=["cleanup"])
+app.include_router(ai_router, prefix="/api/ai", tags=["ai"])
 
 
 if __name__ == "__main__":
