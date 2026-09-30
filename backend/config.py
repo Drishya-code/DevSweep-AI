@@ -8,8 +8,8 @@ from pydantic import Field
 class Settings(BaseSettings):
     # Nebius Token Factory + NVIDIA Nemotron
     NEBIUS_API_KEY: Optional[str] = Field(default=None, description="Nebius Token Factory API key")
-    NEBIUS_BASE_URL: str = Field(default="https://api.studio.nebius.ai/v1", description="Nebius API base URL")
-    NEBIUS_MODEL: str = Field(default="nemotron-3-ultra", description="Model name to use")
+    NEBIUS_BASE_URL: str = Field(default="https://api.tokenfactory.us-central1.nebius.com/v1/", description="Nebius API base URL")
+    NEBIUS_MODEL: str = Field(default="nvidia/nemotron-3-super-120b-a12b", description="Model name to use")
 
     # Workspace
     DEVSWEEP_WORKSPACE_ROOT: Optional[str] = Field(default=None, description="Root directory to scan")

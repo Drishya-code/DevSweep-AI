@@ -166,13 +166,15 @@ class TestCleanupCandidates:
             (root / "package.json").write_text('{}')
             nm_dir = root / "node_modules"
             nm_dir.mkdir()
-            (nm_dir / ".size").write_text("FAKE_NODE_MODULES=1800000000")
+            # Create actual files with real sizes
+            (nm_dir / "file1.js").write_bytes(b"x" * 1000000)  # 1MB
+            (nm_dir / "file2.js").write_bytes(b"x" * 2000000)  # 2MB
             
             candidates = find_cleanup_candidates(root, ProjectType.NODE)
             nm_candidates = [c for c in candidates if c.path == "node_modules"]
             assert len(nm_candidates) == 1
             assert nm_candidates[0].risk == RiskLevel.SAFE
-            assert nm_candidates[0].size_bytes == 1800000000
+            assert nm_candidates[0].size_bytes == 3000000  # 3MB total
 
     def test_finds_dist(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -180,12 +182,14 @@ class TestCleanupCandidates:
             (root / "package.json").write_text('{}')
             dist_dir = root / "dist"
             dist_dir.mkdir()
-            (dist_dir / ".size").write_text("FAKE_DIST=420000000")
+            # Create actual files with real sizes
+            (dist_dir / "bundle.js").write_bytes(b"x" * 5000000)  # 5MB
             
             candidates = find_cleanup_candidates(root, ProjectType.NODE)
             dist_candidates = [c for c in candidates if c.path == "dist"]
             assert len(dist_candidates) == 1
             assert dist_candidates[0].risk == RiskLevel.SAFE
+            assert dist_candidates[0].size_bytes == 5000000
 
     def test_finds_vite_cache(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -193,12 +197,14 @@ class TestCleanupCandidates:
             (root / "package.json").write_text('{}')
             vite_dir = root / ".vite"
             vite_dir.mkdir()
-            (vite_dir / ".size").write_text("FAKE_VITE=86000000")
+            # Create actual files with real sizes
+            (vite_dir / "cache.data").write_bytes(b"x" * 100000)  # 100KB
             
             candidates = find_cleanup_candidates(root, ProjectType.NODE)
             vite_candidates = [c for c in candidates if c.path == ".vite"]
             assert len(vite_candidates) == 1
             assert vite_candidates[0].risk == RiskLevel.SAFE
+            assert vite_candidates[0].size_bytes == 100000
 
     def test_finds_python_caches(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -206,12 +212,14 @@ class TestCleanupCandidates:
             (root / "requirements.txt").write_text("")
             pycache = root / "__pycache__"
             pycache.mkdir()
-            (pycache / ".size").write_text("FAKE_PYCACHE=50000000")
+            # Create actual files with real sizes
+            (pycache / "module.pyc").write_bytes(b"x" * 50000000)  # 50MB
             
             candidates = find_cleanup_candidates(root, ProjectType.PYTHON)
             pycache_candidates = [c for c in candidates if c.path == "__pycache__"]
             assert len(pycache_candidates) == 1
             assert pycache_candidates[0].risk == RiskLevel.SAFE
+            assert pycache_candidates[0].size_bytes == 50000000
 
 
 class TestFullAnalysis:

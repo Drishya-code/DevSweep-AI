@@ -443,20 +443,8 @@ def detect_language(path: Path, project_type: ProjectType) -> str:
 
 
 def get_dir_size(path: Path) -> int:
-    """Get directory size in bytes."""
+    """Get directory size in bytes - actual filesystem size only."""
     try:
-        # Check for demo size metadata file
-        size_file = path / ".size"
-        if size_file.exists():
-            try:
-                content = size_file.read_text().strip()
-                if content.startswith("FAKE_"):
-                    # Parse format: FAKE_NAME=SIZE
-                    size = int(content.split("=")[1])
-                    return size
-            except Exception:
-                pass
-
         total = 0
         for entry in path.rglob("*"):
             if entry.is_file():
@@ -549,7 +537,7 @@ def analyze_project(path: Path) -> ProjectAnalysis:
     git_clean = True  # Simplified - would check git status in real implementation
 
     candidates = find_cleanup_candidates(path, project_type)
-    total_recoverable = sum(c.size_bytes for c in candidates if c.risk == RiskLevel.SAFE)
+    total_recoverable = sum(c.size_bytes for c in candidates if c.risk in (RiskLevel.SAFE, RiskLevel.CAUTION))
 
     protected = [p for p in PROTECTED_PATTERNS if not p.startswith("*")]
 
