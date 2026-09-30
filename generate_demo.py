@@ -9,6 +9,9 @@ import random
 import shutil
 from pathlib import Path
 
+# Use a fixed seed for deterministic demo generation
+random.seed(42)
+
 DEMO_ROOT = Path(__file__).parent / "demo-project"
 
 def generate_demo():

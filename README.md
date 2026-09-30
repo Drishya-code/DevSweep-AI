@@ -1,7 +1,6 @@
 # DevSweep AI
 
 > **Clean your workspace. Keep your project. Restore it anytime.**
-
 DevSweep AI is an intelligent developer workspace management tool that helps you reclaim storage space from regenerable artifacts (node_modules, build outputs, caches, virtual environments) while keeping your source code, Git history, and project configuration safe.
 
 ## Problem
@@ -22,12 +21,11 @@ Manually identifying what's safe to delete is error-prone and time-consuming.
 DevSweep AI uses an **agentic AI workflow** to:
 1. **Scan** your workspace intelligently
 2. **Understand** your project type, dependencies, and structure
-3. **Analyze** what's safe to remove vs. what must be protected
+3. **Analyze** what's safe to remove vs. what must be protected (via NVIDIA Nemotron)
 4. **Plan** a cleanup with risk levels and explanations
 5. **Ask** for your approval before any destructive action
 6. **Execute** approved cleanup safely
 7. **Verify** the project still works
-8. **Remember** the project state for future restoration
 
 ## Architecture
 
@@ -45,41 +43,75 @@ DevSweep AI
 │
 ├── Backend (Python + FastAPI)
 │   ├── AI Agent (Nebius Token Factory + NVIDIA Nemotron)
-│   ├── Project Scanner (detect type, framework, dependencies)
-│   ├── Cleanup Engine (safety rules, risk assessment)
-│   ├── Restore Engine (reconstruct environments)
-│   ├── Project Memory (lightweight manifests)
-│   └── Tools (filesystem, git, subprocess with allowlists)
+│   ├── Project Scanner (detect type, framework, dependencies, real git status)
+│   ├── Cleanup Engine (safety rules, risk assessment, scanner allowlist enforcement)
+│   ├── Verification Engine (project health after cleanup)
+│   └── Tools (filesystem, git with protection allowlists)
 │
 └── Demo Project Fixture
-    ├── Deterministic 2+ GB recoverable demo
-    └── Clearly separated from production mode
+    ├── ~128 MB of real generated files (deterministic seed)
+    └── Regenerated on demand via /api/scan/demo/reset
 ```
 
 ## AI Workflow
 
 ```
-OBSERVE → UNDERSTAND → ANALYZE → PLAN → ASK APPROVAL → EXECUTE → VERIFY → REMEMBER → RESTORE
+FILESYSTEM SCAN
+      ↓
+DETERMINISTIC CANDIDATES
+      ↓
+STRUCTURED CANDIDATE CONTEXT
+      ↓
+NVIDIA NEMOTRON VIA NEBIUS
+      ↓
+STRUCTURED AI RECOMMENDATIONS
+      ↓
+DETERMINISTIC SAFETY VALIDATION
+      ↓
+CLEANUP PLAN
+      ↓
+USER APPROVAL
+      ↓
+EXECUTION
 ```
 
-The AI **recommends**, the application **validates**, the user **approves**, the application **executes**.
+The AI **recommends**, the application **validates**, the user **approves**, the application **executes**. The AI never executes deletion directly.
+
+### Safety Rules for AI Recommendations
+
+- AI recommendations for paths **not discovered by the scanner are rejected**
+- If AI upgrades SAFE → CAUTION, the higher (more restrictive) classification wins
+- AI can never downgrade risk
+- **DANGEROUS → DELETE is always rejected**
+- Only SAFE and CAUTION items can be deleted; CAUTION requires explicit user approval
 
 ## Safety Model
 
 - **SAFE** - Regenerable artifacts (node_modules, dist, __pycache__, .venv)
-- **CAUTION** - Project-specific caches, unknown directories
+- **CAUTION** - Project-specific caches, unknown large directories
 - **DANGEROUS** - Source code, Git history, .env files, credentials, databases
 
 Default: **SAFE cleanup only**. Explicit confirmation required for CAUTION.
+
+### Deletion Allowlist
+
+A DELETE target must satisfy ALL of:
+1. It is inside the project workspace (no path traversal, nothing outside)
+2. It is not protected (source code, .git, .env, credentials, config files)
+3. It was discovered by the deterministic scanner
+4. It is classified as SAFE or CAUTION (never DANGEROUS)
+5. CAUTION requires explicit user approval
+
+The server re-validates every deletion target against a fresh scanner run at execution time. Client-supplied risk/size/reason values are never trusted as authoritative.
 
 ## Nebius + NVIDIA Integration
 
 This project is built for the **Nebius x NVIDIA Global AI Hackathon**.
 
-- **Nebius Token Factory** provides the OpenAI-compatible API endpoint
-- **NVIDIA Nemotron** models provide the reasoning capability
-- Real runtime calls to Nebius Token Factory (not mocked in demo)
-- AI provider abstraction allows swapping providers for other hackathons
+- **Nebius Token Factory** endpoint: `https://api.tokenfactory.us-central1.nebius.com/v1/`
+- **Model**: `nvidia/nemotron-3-super-120b-a12b`
+- Real runtime calls to Nebius Token Factory in the analysis and chat endpoints
+- AI provider abstraction (NebiusProvider / MockProvider) — mock is used only when no API key is configured
 
 ## Quick Start
 
@@ -87,8 +119,7 @@ This project is built for the **Nebius x NVIDIA Global AI Hackathon**.
 # Backend
 cd backend
 pip install -r requirements.txt
-cp .env.example .env
-# Edit .env with your NEBIUS_API_KEY
+# Set your NEBIUS_API_KEY in the environment (see .env.example)
 uvicorn main:app --reload
 
 # Frontend
@@ -101,18 +132,20 @@ npm run dev
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `NEBIUS_API_KEY` | Nebius Token Factory API key | For AI features |
-| `NEBIUS_BASE_URL` | API base URL (default: https://api.studio.nebius.ai/v1) | No |
-| `NEBIUS_MODEL` | Model name (default: nemotron-3-ultra) | No |
+| `NEBIUS_API_KEY` | Nebius Token Factory API key | For real AI analysis |
+| `NEBIUS_BASE_URL` | API base URL (default: https://api.tokenfactory.us-central1.nebius.com/v1/) | No |
+| `NEBIUS_MODEL` | Model name (default: nvidia/nemotron-3-super-120b-a12b) | No |
 | `DEVSWEEP_WORKSPACE_ROOT` | Root directory to scan (default: current dir) | No |
 | `DEVSWEEP_DEMO_MODE` | Enable demo fixture (true/false) | No |
 
 ## Demo Mode
 
-Run with a deterministic demo project that shows 2+ GB recoverable without a real project:
+The demo project fixture is generated locally with a fixed random seed (deterministic), producing ~128 MB of real files across 7 cleanup candidates:
 
 ```bash
-DEVSWEEP_DEMO_MODE=true uvicorn main:app --reload
+python generate_demo.py          # generate/reset demo data
+uvicorn main:app --reload        # from backend/
+# POST /api/scan/demo/reset also regenerates on demand
 ```
 
 ## Project Structure
@@ -120,13 +153,11 @@ DEVSWEEP_DEMO_MODE=true uvicorn main:app --reload
 ```
 DevSweepAI/
 ├── backend/
-│   ├── ai/                 # AI provider abstraction, Nebius client, prompts, agent
-│   ├── scanner/            # Project detection, framework detection, dependency analysis
-│   ├── cleanup/            # Cleanup candidates, risk assessment, execution, verification
-│   ├── restore/            # Restore logic per ecosystem
-│   ├── memory/             # Project manifest, history storage
-│   ├── tools/              # Filesystem, git, subprocess tools with allowlists
-│   ├── tests/              # Unit and integration tests
+│   ├── ai/                 # AI provider abstraction, Nebius client, prompts, routes
+│   ├── scanner/            # Project detection, framework detection, candidates
+│   ├── cleanup/            # Cleanup engine, plan generator, verification
+│   ├── tools/              # Filesystem/git tools with protection allowlists
+│   ├── tests/              # 40 unit + integration tests
 │   ├── main.py             # FastAPI entry point
 │   ├── config.py           # Configuration management
 │   └── requirements.txt
@@ -134,23 +165,32 @@ DevSweepAI/
 │   ├── src/
 │   │   ├── components/     # Reusable UI components
 │   │   ├── pages/          # Page components
-│   │   ├── hooks/          # Custom React hooks
-│   │   ├── services/       # API clients
 │   │   ├── context/        # React context providers
 │   │   └── types/          # TypeScript types
-│   ├── public/
 │   ├── package.json
 │   ├── vite.config.ts
 │   └── tailwind.config.js
-├── demo-project/           # Deterministic demo fixture
-├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── SECURITY.md
-│   └── DEMO.md
+├── demo-project/           # Demo fixture (generated locally, gitignored)
+├── generate_demo.py        # Deterministic demo data generator
 ├── .gitignore
 ├── .env.example
 └── LICENSE
 ```
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check with AI provider status |
+| POST | `/api/scan/` | Scan a workspace path |
+| GET | `/api/scan/demo` | Scan the demo project |
+| POST | `/api/scan/demo/reset` | Regenerate demo data |
+| POST | `/api/ai/analyze` | AI analysis (scan → Nemotron → validated recommendations) |
+| POST | `/api/ai/chat` | Chat with the AI agent |
+| GET | `/api/ai/models` | Current AI provider/model info |
+| POST | `/api/cleanup/generate-plan` | Generate cleanup plan (AI-validated) |
+| POST | `/api/cleanup/execute` | Execute approved plan (with scanner allowlist re-validation) |
+| POST | `/api/cleanup/verify` | Verify project health after cleanup |
 
 ## License
 

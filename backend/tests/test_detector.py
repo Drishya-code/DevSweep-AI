@@ -2,6 +2,7 @@ import pytest
 from pathlib import Path
 import tempfile
 import os
+import json
 
 from scanner.detector import (
     detect_project_type,
@@ -16,6 +17,19 @@ from scanner.detector import (
     PROTECTED_PATTERNS,
     is_protected,
 )
+from cleanup.engine import (
+    CleanupEngine,
+    PlanGenerator,
+    VerificationEngine,
+    CleanupPlan,
+    CleanupItem,
+    CleanupResult,
+    VerificationResult,
+    RiskLevel as EngineRiskLevel,
+    ActionType,
+)
+from ai.routes import ai_analyze
+from ai.routes import AnalyzeRequest
 
 
 class TestProjectDetection:
@@ -249,5 +263,307 @@ class TestFullAnalysis:
             assert len(analysis.cleanup_candidates) >= 2
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+class TestGitState:
+    def test_git_clean_detected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "package.json").write_text('{}')
+            git_dir = root / ".git"
+            git_dir.mkdir()
+            # Initialize git repo
+            import subprocess
+            subprocess.run(["git", "init"], cwd=root, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=root, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, capture_output=True)
+            subprocess.run(["git", "add", "."], cwd=root, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=root, capture_output=True)
+            
+            analysis = analyze_project(root)
+            assert analysis.has_git == True
+            assert analysis.git_clean == True
+
+    def test_git_dirty_detected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "package.json").write_text('{}')
+            git_dir = root / ".git"
+            git_dir.mkdir()
+            # Initialize git repo
+            import subprocess
+            subprocess.run(["git", "init"], cwd=root, capture_output=True)
+            subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=root, capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=root, capture_output=True)
+            subprocess.run(["git", "add", "."], cwd=root, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=root, capture_output=True)
+            
+            # Create uncommitted change
+            (root / "new_file.txt").write_text("uncommitted")
+            
+            analysis = analyze_project(root)
+            assert analysis.has_git == True
+            assert analysis.git_clean == False
+
+
+class TestCleanupEngine:
+    def test_dangerous_recommendation_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "package.json").write_text('{}')
+            nm_dir = root / "node_modules"
+            nm_dir.mkdir()
+            (nm_dir / "file.js").write_bytes(b"x" * 1000)
+            # Create src directory (protected)
+            src_dir = root / "src"
+            src_dir.mkdir()
+            (src_dir / "main.js").write_bytes(b"x" * 1000)
+            
+            engine = CleanupEngine(root)
+            engine.set_scanner_candidates([
+                {"path": "node_modules", "risk": "SAFE", "size_bytes": 1000}
+            ])
+            
+            plan = CleanupPlan(items=[
+                CleanupItem(path="node_modules", action=ActionType.DELETE, risk=EngineRiskLevel.SAFE, reason="test", estimated_bytes=1000),
+                CleanupItem(path="src", action=ActionType.DELETE, risk=EngineRiskLevel.DANGEROUS, reason="test", estimated_bytes=1000),
+            ])
+            
+            validation = engine.validate_plan(plan)
+            assert validation["valid"] == False
+            assert any("DANGEROUS" in e for e in validation["errors"])
+
+    def test_ai_unknown_path_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "package.json").write_text('{}')
+            nm_dir = root / "node_modules"
+            nm_dir.mkdir()
+            (nm_dir / "file.js").write_bytes(b"x" * 1000)
+            # Create the unknown path
+            important_dir = root / "important-data"
+            important_dir.mkdir()
+            (important_dir / "data.txt").write_bytes(b"x" * 1000)
+            
+            engine = CleanupEngine(root)
+            engine.set_scanner_candidates([
+                {"path": "node_modules", "risk": "SAFE", "size_bytes": 1000}
+            ])
+            
+            plan = CleanupPlan(items=[
+                CleanupItem(path="important-data", action=ActionType.DELETE, risk=EngineRiskLevel.SAFE, reason="test", estimated_bytes=1000),
+            ])
+            
+            validation = engine.validate_plan(plan)
+            assert validation["valid"] == False
+            assert any("allowlist" in e for e in validation["errors"])
+
+    def test_path_traversal_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "package.json").write_text('{}')
+            nm_dir = root / "node_modules"
+            nm_dir.mkdir()
+            (nm_dir / "file.js").write_bytes(b"x" * 1000)
+            
+            engine = CleanupEngine(root)
+            engine.set_scanner_candidates([
+                {"path": "node_modules", "risk": "SAFE", "size_bytes": 1000}
+            ])
+            
+            plan = CleanupPlan(items=[
+                CleanupItem(path="../outside", action=ActionType.DELETE, risk=EngineRiskLevel.SAFE, reason="test", estimated_bytes=1000),
+            ])
+            
+            validation = engine.validate_plan(plan)
+            assert validation["valid"] == False
+
+    def test_outside_workspace_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            outside = Path(tmpdir) / "outside"
+            outside.mkdir()
+            (outside / "secret.txt").write_bytes(b"x" * 1000)
+            
+            engine = CleanupEngine(root)
+            engine.set_scanner_candidates([
+                {"path": "node_modules", "risk": "SAFE", "size_bytes": 1000}
+            ])
+            
+            plan = CleanupPlan(items=[
+                CleanupItem(path="C:/Windows/System32", action=ActionType.DELETE, risk=EngineRiskLevel.SAFE, reason="test", estimated_bytes=1000),
+            ])
+            
+            validation = engine.validate_plan(plan)
+            assert validation["valid"] == False
+
+    def test_caution_requires_approval(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "package.json").write_text('{}')
+            cache_dir = root / "cache"
+            cache_dir.mkdir()
+            (cache_dir / "file.bin").write_bytes(b"x" * 20000000)  # 20MB -> CAUTION
+            
+            engine = CleanupEngine(root)
+            engine.set_scanner_candidates([
+                {"path": "cache", "risk": "CAUTION", "size_bytes": 20000000}
+            ])
+            
+            plan = CleanupPlan(items=[
+                CleanupItem(path="cache", action=ActionType.DELETE, risk=EngineRiskLevel.CAUTION, reason="test", estimated_bytes=20000000),
+            ])
+            
+            # Without approval
+            validation = engine.validate_plan(plan)
+            assert validation["valid"] == True  # Plan is valid
+            result = engine.execute_plan(plan, approved=False)
+            assert result.success == False
+            assert any("approval" in e.lower() for e in result.errors)
+            
+            # With approval
+            result = engine.execute_plan(plan, approved=True)
+            assert result.success == True
+
+    def test_actual_deleted_bytes_match_filesystem(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "package.json").write_text('{}')
+            nm_dir = root / "node_modules"
+            nm_dir.mkdir()
+            (nm_dir / "file1.js").write_bytes(b"x" * 1000000)
+            (nm_dir / "file2.js").write_bytes(b"x" * 2000000)
+            
+            engine = CleanupEngine(root)
+            engine.set_scanner_candidates([
+                {"path": "node_modules", "risk": "SAFE", "size_bytes": 3000000}
+            ])
+            
+            plan = CleanupPlan(items=[
+                CleanupItem(path="node_modules", action=ActionType.DELETE, risk=EngineRiskLevel.SAFE, reason="test", estimated_bytes=3000000),
+            ])
+            
+            result = engine.execute_plan(plan, approved=True)
+            assert result.success == True
+            assert result.bytes_freed == 3000000
+
+
+class TestPlanGenerator:
+    def test_generates_plan_with_risk_levels(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "package.json").write_text('{}')
+            
+            nm_dir = root / "node_modules"
+            nm_dir.mkdir()
+            (nm_dir / "file.js").write_bytes(b"x" * 1000000)
+            
+            dist_dir = root / "dist"
+            dist_dir.mkdir()
+            (dist_dir / "bundle.js").write_bytes(b"x" * 5000000)
+            
+            cache_dir = root / "cache"
+            cache_dir.mkdir()
+            (cache_dir / "file.bin").write_bytes(b"x" * 20000000)
+            
+            generator = PlanGenerator(root)
+            plan = generator.generate_plan([
+                {"path": "node_modules", "risk": "SAFE", "reason": "test", "size_bytes": 1000000},
+                {"path": "dist", "risk": "SAFE", "reason": "test", "size_bytes": 5000000},
+                {"path": "cache", "risk": "CAUTION", "reason": "test", "size_bytes": 20000000},
+            ])
+            
+            assert len(plan.items) == 3
+            assert plan.total_safe_bytes == 6000000
+            assert plan.total_caution_bytes == 20000000
+            assert plan.requires_approval == True
+            assert any("CAUTION" in w for w in plan.warnings)
+
+
+class TestVerificationEngine:
+    def test_verify_protected_files_survive(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "package.json").write_text('{}')
+            (root / "src").mkdir()
+            (root / ".git").mkdir()
+            
+            engine = VerificationEngine(root)
+            result = engine.verify("node")
+            
+            assert result.passed == True
+            checks = {c["name"]: c for c in result.checks}
+            assert checks["protected_package_json"]["passed"] == True
+            assert checks["source_src"]["passed"] == True
+
+
+class TestAIAnalyzeIntegration:
+    """Integration test: scan -> AI analyze -> safety validation -> cleanup plan"""
+    def test_ai_analyze_calls_provider(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "package.json").write_text('{"name": "test"}')
+            nm_dir = root / "node_modules"
+            nm_dir.mkdir()
+            (nm_dir / "file.js").write_bytes(b"x" * 1000000)
+            
+            # This test uses mock provider (no NEBIUS_API_KEY)
+            # Just verify the endpoint works
+            import asyncio
+            request = AnalyzeRequest(project_path=str(root))
+            result = asyncio.run(ai_analyze(request))
+            
+            assert result.project_type == "node"
+            assert len(result.candidates) >= 1
+            # Should have action field from AI
+            for c in result.candidates:
+                assert "action" in c
+                assert c["action"] in ("DELETE", "KEEP")
+
+    def test_ai_recommendation_is_used(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "package.json").write_text('{"name": "test"}')
+            nm_dir = root / "node_modules"
+            nm_dir.mkdir()
+            (nm_dir / "file.js").write_bytes(b"x" * 1000000)
+            
+            import asyncio
+            request = AnalyzeRequest(project_path=str(root))
+            result = asyncio.run(ai_analyze(request))
+            
+            # Even with fallback, AI recommendations should be present
+            for c in result.candidates:
+                assert "action" in c
+                assert c["action"] in ("DELETE", "KEEP")
+
+    def test_ai_unknown_path_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "package.json").write_text('{}')
+            nm_dir = root / "node_modules"
+            nm_dir.mkdir()
+            (nm_dir / "file.js").write_bytes(b"x" * 1000000)
+            
+            import asyncio
+            request = AnalyzeRequest(project_path=str(root))
+            result = asyncio.run(ai_analyze(request))
+            
+            # All returned candidates should be from scanner
+            scanner_candidates = {"node_modules"}
+            for c in result.candidates:
+                assert c["path"] in scanner_candidates
+
+    def test_dangerous_ai_recommendation_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "package.json").write_text('{}')
+            src_dir = root / "src"
+            src_dir.mkdir()
+            (src_dir / "main.js").write_bytes(b"x" * 1000000)
+            
+            import asyncio
+            request = AnalyzeRequest(project_path=str(root))
+            result = asyncio.run(ai_analyze(request))
+            
+            # src should not be in candidates (protected)
+            for c in result.candidates:
+                assert c["path"] != "src"

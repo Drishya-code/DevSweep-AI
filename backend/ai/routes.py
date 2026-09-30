@@ -4,10 +4,11 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import uuid
+import json
 
 from ai.factory import get_ai_provider
 from ai.prompts import DEVSWEEP_SYSTEM_PROMPT
-from scanner.detector import analyze_project
+from scanner.detector import analyze_project, RiskLevel
 from config import settings
 from pathlib import Path
 
@@ -109,25 +110,143 @@ async def ai_analyze(request: AnalyzeRequest):
     if not path.exists():
         raise HTTPException(status_code=404, detail="Project path not found")
     
+    # First, run deterministic scan
     analysis = analyze_project(path)
     
+    # Build structured candidate context for Nemotron
+    candidate_context = []
+    for c in analysis.cleanup_candidates:
+        candidate_context.append({
+            "path": c.path,
+            "size_bytes": c.size_bytes,
+            "scanner_risk": c.risk.value,
+            "scanner_reason": c.reason,
+        })
+    
+    # Call Nemotron for AI analysis
+    provider = get_ai_provider()
+    from ai.provider import ChatMessage as ProviderChatMessage
+    
+    # Create structured prompt for Nemotron
+    system_prompt = """You are DevSweep AI, analyzing developer workspace cleanup candidates.
+You receive deterministic scanner findings and must provide structured recommendations.
+
+For each candidate, respond with:
+- path: the exact path from the scanner
+- action: "DELETE" or "KEEP"
+- risk: "SAFE", "CAUTION", or "DANGEROUS" 
+- reason: concise explanation
+
+Rules:
+1. Never recommend DANGEROUS items for deletion
+2. If scanner says SAFE but you see risk, upgrade to CAUTION (never downgrade)
+3. Only recommend paths that were in the scanner results
+4. Return valid JSON only"""
+    
+    user_prompt = f"""Project Analysis:
+- Path: {path}
+- Type: {analysis.project_type.value}
+- Framework: {analysis.framework}
+- Package Manager: {analysis.package_manager}
+- Language: {analysis.language}
+- Git: {analysis.has_git} (clean: {analysis.git_clean})
+
+Scanner Candidates ({len(candidate_context)} items):
+{json.dumps(candidate_context, indent=2)}
+
+Return JSON:
+{{
+  "recommendations": [
+    {{"path": "...", "action": "DELETE|KEEP", "risk": "SAFE|CAUTION|DANGEROUS", "reason": "..."}}
+  ]
+}}"""
+    
+    messages = [
+        ProviderChatMessage(role="system", content=system_prompt),
+        ProviderChatMessage(role="user", content=user_prompt),
+    ]
+    
+    ai_recommendations = []
+    try:
+        response = await provider.structured_completion(
+            messages=messages,
+            schema={
+                "type": "object",
+                "properties": {
+                    "recommendations": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "action": {"type": "string", "enum": ["DELETE", "KEEP"]},
+                                "risk": {"type": "string", "enum": ["SAFE", "CAUTION", "DANGEROUS"]},
+                                "reason": {"type": "string"},
+                            },
+                            "required": ["path", "action", "risk", "reason"],
+                        },
+                    }
+                },
+                "required": ["recommendations"],
+            },
+        )
+        ai_recommendations = response.get("recommendations", [])
+    except Exception as e:
+        # Fallback to scanner recommendations if AI fails
+        ai_recommendations = [
+            {
+                "path": c.path,
+                "action": "DELETE" if c.risk in (RiskLevel.SAFE, RiskLevel.CAUTION) else "KEEP",
+                "risk": c.risk.value,
+                "reason": c.reason + " (fallback - AI unavailable)",
+            }
+            for c in analysis.cleanup_candidates
+        ]
+    
+    # Merge AI recommendations with scanner results (safety validation)
+    # Only use AI recommendations for paths that exist in scanner results
+    scanner_paths = {c.path: c for c in analysis.cleanup_candidates}
+    final_candidates = []
+    
+    for ai_rec in ai_recommendations:
+        path = ai_rec.get("path", "")
+        if path not in scanner_paths:
+            # Reject unknown paths
+            continue
+        
+        scanner_candidate = scanner_paths[path]
+        
+        # Determine final risk - use higher of scanner and AI risk
+        risk_order = {"SAFE": 0, "CAUTION": 1, "DANGEROUS": 2}
+        scanner_risk_val = risk_order.get(scanner_candidate.risk.value, 0)
+        ai_risk_val = risk_order.get(ai_rec.get("risk", "SAFE"), 0)
+        final_risk_val = max(scanner_risk_val, ai_risk_val)
+        final_risk = ["SAFE", "CAUTION", "DANGEROUS"][final_risk_val]
+        
+        # Reject DANGEROUS deletions
+        action = ai_rec.get("action", "KEEP")
+        if final_risk == "DANGEROUS" and action == "DELETE":
+            action = "KEEP"
+        
+        final_candidates.append({
+            "path": path,
+            "risk": final_risk,
+            "reason": ai_rec.get("reason", scanner_candidate.reason),
+            "size_bytes": scanner_candidate.size_bytes,
+            "size_human": format_bytes(scanner_candidate.size_bytes),
+            "action": action,
+        })
+    
+    total_recoverable = sum(c["size_bytes"] for c in final_candidates if c["action"] == "DELETE" and c["risk"] in ("SAFE", "CAUTION"))
+
     return AnalyzeResponse(
         project_type=analysis.project_type.value,
         framework=analysis.framework,
         package_manager=analysis.package_manager,
         language=analysis.language,
-        candidates=[
-            {
-                "path": c.path,
-                "risk": c.risk.value,
-                "reason": c.reason,
-                "size_bytes": c.size_bytes,
-                "size_human": format_bytes(c.size_bytes),
-            }
-            for c in analysis.cleanup_candidates
-        ],
-        total_recoverable=analysis.total_recoverable_bytes,
-        total_recoverable_human=format_bytes(analysis.total_recoverable_bytes),
+        candidates=final_candidates,
+        total_recoverable=total_recoverable,
+        total_recoverable_human=format_bytes(total_recoverable),
     )
 
 

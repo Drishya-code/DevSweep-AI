@@ -68,6 +68,39 @@ class CleanupEngine:
         self.workspace_root = workspace_root.resolve()
         self.fs_tools = FilesystemTools(workspace_root)
         self.git_tools = GitTools(workspace_root)
+        # Cache scanner results for allowlist validation
+        self._scanner_candidates: List[Dict[str, Any]] = []
+   
+    def set_scanner_candidates(self, candidates: List[Dict[str, Any]]):
+        """Set the allowed cleanup candidates from scanner for validation."""
+        self._scanner_candidates = candidates
+   
+    def _is_allowed_candidate(self, path: str, action: ActionType, risk: RiskLevel) -> bool:
+        """Check if a path is in the scanner's allowlist and valid for deletion."""
+        if action != ActionType.DELETE:
+            return True  # KEEP actions are always allowed
+        
+        # Check if path exists in scanner results
+        for candidate in self._scanner_candidates:
+            if candidate["path"] == path:
+                # Verify risk level matches or is higher (more restrictive)
+                candidate_risk = candidate.get("risk", "SAFE")
+                risk_order = {"SAFE": 0, "CAUTION": 1, "DANGEROUS": 2}
+                candidate_risk_val = risk_order.get(candidate_risk, 0)
+                current_risk_val = risk_order.get(risk.value, 0)
+                
+                # Must not be more dangerous than scanner assessed
+                if current_risk_val > candidate_risk_val:
+                    return False
+                
+                # Must be SAFE or CAUTION (never DANGEROUS)
+                if candidate_risk_val >= 2:  # DANGEROUS
+                    return False
+                
+                return True
+        
+        # Not found in scanner results = not allowed
+        return False
     
     def validate_plan(self, plan: CleanupPlan) -> Dict[str, Any]:
         """Validate a cleanup plan against safety rules."""
@@ -87,15 +120,22 @@ class CleanupEngine:
                 errors.append(f"Path does not exist: {item.path}")
                 continue
             
+            # Risk level consistency - DANGEROUS check first
+            if item.risk == RiskLevel.DANGEROUS:
+                errors.append(f"DANGEROUS items not allowed in plan: {item.path}")
+                continue
+            
             # Check protection
             if self.fs_tools.is_protected(item_path):
                 errors.append(f"Path is protected: {item.path}")
                 continue
             
-            # Risk level consistency
-            if item.risk == RiskLevel.DANGEROUS:
-                errors.append(f"DANGEROUS items not allowed in plan: {item.path}")
-            elif item.risk == RiskLevel.CAUTION and item.action == ActionType.DELETE:
+            # Check if in scanner allowlist
+            if not self._is_allowed_candidate(item.path, item.action, item.risk):
+                errors.append(f"Path not in scanner allowlist or risk mismatch: {item.path}")
+                continue
+            
+            if item.risk == RiskLevel.CAUTION and item.action == ActionType.DELETE:
                 warnings.append(f"CAUTION item requires explicit approval: {item.path}")
         
         # Check git status
