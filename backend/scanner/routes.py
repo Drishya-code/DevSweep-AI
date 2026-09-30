@@ -152,3 +152,25 @@ async def get_project_types():
         "types": [pt.value for pt in ProjectType],
         "risk_levels": [rl.value for rl in RiskLevel],
     }
+
+
+@router.post("/demo/reset")
+async def reset_demo():
+    """Regenerate demo project with fresh realistic data."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    
+    # From backend/scanner/routes.py -> project root is 3 levels up
+    script_path = Path(__file__).parent.parent.parent / "generate_demo.py"
+    if not script_path.exists():
+        # Fallback to cwd
+        script_path = Path.cwd() / "generate_demo.py"
+    if not script_path.exists():
+        raise HTTPException(status_code=404, detail="Demo generation script not found")
+    
+    result = subprocess.run([sys.executable, str(script_path)], capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"Demo reset failed: {result.stderr}")
+    
+    return {"success": True, "message": "Demo project regenerated"}

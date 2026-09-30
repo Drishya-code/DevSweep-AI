@@ -19,6 +19,8 @@ interface DevSweepContextType {
   setIsScanning: (scanning: boolean) => void
   setIsCleaning: (cleaning: boolean) => void
   setDemoMode: (demo: boolean) => void
+  setCurrentPlan: (plan: any) => void
+  addCleanupToHistory: (cleanup: any) => void
 }
 
 const DevSweepContext = createContext<DevSweepContextType | undefined>(undefined)
@@ -33,6 +35,7 @@ export function DevSweepProvider({ children }: { children: ReactNode }) {
   const [aiProvider, setAiProvider] = useState('mock')
   const [aiModel, setAiModel] = useState('devsweep-mock')
   const [demoMode, setDemoMode] = useState(false)
+  const [currentPlan, setCurrentPlanState] = useState<any>(null)
 
   // Load config on mount
   useEffect(() => {
@@ -46,6 +49,14 @@ export function DevSweepProvider({ children }: { children: ReactNode }) {
 
   const addScanToHistory = (scan: ScanResponse) => {
     setScanHistory(prev => [scan, ...prev.slice(0, 49)]) // Keep last 50
+  }
+
+  const addCleanupToHistory = (cleanup: any) => {
+    setCleanupHistory(prev => [cleanup, ...prev.slice(0, 49)])
+  }
+
+  const setCurrentPlan = (plan: any) => {
+    setCurrentPlanState(plan)
   }
 
   return (
@@ -64,6 +75,8 @@ export function DevSweepProvider({ children }: { children: ReactNode }) {
       setIsScanning,
       setIsCleaning,
       setDemoMode,
+      setCurrentPlan,
+      addCleanupToHistory,
     }}>
       {children}
     </DevSweepContext.Provider>

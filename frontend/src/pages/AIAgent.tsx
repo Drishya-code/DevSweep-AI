@@ -75,56 +75,31 @@ export function AIAgent() {
     setIsLoading(true)
 
     try {
-      // Simulate AI response - in real implementation, call backend API
-      await new Promise(r => setTimeout(r, 1000))
+      // Call real backend AI API
+      const res = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: userInput,
+          history: messages.slice(-10).map(m => ({ role: m.role, content: m.content })),
+          project_path: currentProject?.project_path,
+        }),
+      })
       
-      let response = ''
-      
-      if (userInput.toLowerCase().includes('scan')) {
-        response = `I'll scan your workspace for cleanup opportunities.`
-        if (currentProject) {
-          response += `\n\n**Current Project:** ${currentProject.project_path.split('/').pop()}\n**Framework:** ${currentProject.framework}\n**Recoverable:** ${currentProject.total_recoverable_human}`
-        } else {
-          response += `\n\nNo project currently selected. I'll scan the default workspace root.`
-        }
-      } else if (userInput.toLowerCase().includes('clean') || userInput.toLowerCase().includes('delete')) {
-        response = `I'll help you create a safe cleanup plan.`
-        if (currentProject) {
-          const safeItems = currentProject.cleanup_candidates.filter(c => c.risk === 'SAFE')
-          const cautionItems = currentProject.cleanup_candidates.filter(c => c.risk === 'CAUTION')
-          
-          response += `\n\n**SAFE items (auto-approved):**`
-          safeItems.forEach(item => {
-            response += `\n✓ ${item.path} - ${item.size_human} - ${item.reason}`
-          })
-          
-          if (cautionItems.length > 0) {
-            response += `\n\n**CAUTION items (require explicit approval):**`
-            cautionItems.forEach(item => {
-              response += `\n⚠ ${item.path} - ${item.size_human} - ${item.reason}`
-            })
-          }
-          
-          response += `\n\n**Total safe recovery:** ${currentProject.total_recoverable_human}`
-          response += `\n\nWould you like me to create a cleanup plan for approval?`
-        } else {
-          response += `\n\nPlease scan a project first.`
-        }
-      } else if (userInput.toLowerCase().includes('restore')) {
-        response = `To restore your project after cleanup:\n\n1. **Restore Dependencies** - Reinstall from lock files (npm install, pip install -r requirements.txt)\n2. **Restore Build** - Rebuild the project (npm run build, python setup.py build)\n3. **Full Project Setup** - Clone from Git and reconstruct everything\n\nGo to the **Restore Center** page for guided restoration with commands.`
-      } else if (userInput.toLowerCase().includes('safe')) {
-        response = `Safe cleanup targets only SAFE items:\n• node_modules (regenerable from package-lock.json)\n• dist/build (generated build output)\n• __pycache__, .pytest_cache (Python caches)\n• .venv/venv (virtual environments)\n• .next, .vite, .cache (framework caches)\n• *.log, tmp, temp (logs and temporary files)\n\nSource code, .git, .env files, and credentials are **always protected**.`
-      } else {
-        response = `I understand you want to: "${userInput}"\n\nI can help with scanning, analyzing, planning cleanups, and restoring projects. Try one of the quick actions below, or ask me specifically what you'd like to do.`
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'AI request failed')
       }
-
+      
+      const data = await res.json()
+      
       const assistantMessage: ChatMessage = {
         id: generateId(),
         role: 'assistant',
-        content: response,
+        content: data.response,
         timestamp: new Date(),
       }
-
+      
       setMessages(prev => [...prev, assistantMessage])
     } catch (error) {
       const errorMessage: ChatMessage = {
@@ -195,7 +170,7 @@ export function AIAgent() {
             <div className="bg-devsweep-bgSecondary border border-devsweep-border rounded-2xl px-4 py-3 max-w-[80%]">
               <div className="flex items-center gap-2 text-devsweep-textMuted">
                 <Loader2 className="w-4 h-4 animate-spin" />
-                <span>Thinking...</span>
+                <span>AI is analyzing...</span>
               </div>
             </div>
           </div>
