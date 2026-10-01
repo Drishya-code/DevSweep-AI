@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import uuid
 import json
+import logging
 
 from ai.factory import get_ai_provider
 from ai.prompts import DEVSWEEP_SYSTEM_PROMPT
@@ -44,6 +45,7 @@ class AnalyzeResponse(BaseModel):
     candidates: List[Dict[str, Any]]
     total_recoverable: int
     total_recoverable_human: str
+    ai_used: bool = True  # True if real AI inference succeeded
 
 
 def format_bytes(bytes_val: int) -> str:
@@ -165,44 +167,40 @@ Return JSON:
         ProviderChatMessage(role="system", content=system_prompt),
         ProviderChatMessage(role="user", content=user_prompt),
     ]
-    
+
     ai_recommendations = []
+    ai_used = True
     try:
-        response = await provider.structured_completion(
-            messages=messages,
-            schema={
-                "type": "object",
-                "properties": {
-                    "recommendations": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "path": {"type": "string"},
-                                "action": {"type": "string", "enum": ["DELETE", "KEEP"]},
-                                "risk": {"type": "string", "enum": ["SAFE", "CAUTION", "DANGEROUS"]},
-                                "reason": {"type": "string"},
+            response = await provider.structured_completion(
+                messages=messages,
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "recommendations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {"type": "string"},
+                                    "action": {"type": "string", "enum": ["DELETE", "KEEP"]},
+                                    "risk": {"type": "string", "enum": ["SAFE", "CAUTION", "DANGEROUS"]},
+                                    "reason": {"type": "string"},
+                                },
+                                "required": ["path", "action", "risk", "reason"],
                             },
-                            "required": ["path", "action", "risk", "reason"],
                         },
-                    }
+                    },
+                    "required": ["recommendations"],
                 },
-                "required": ["recommendations"],
-            },
-        )
-        ai_recommendations = response.get("recommendations", [])
+            )
+            ai_recommendations = response.get("recommendations", [])
     except Exception as e:
-        # Fallback to scanner recommendations if AI fails
-        ai_recommendations = [
-            {
-                "path": c.path,
-                "action": "DELETE" if c.risk in (RiskLevel.SAFE, RiskLevel.CAUTION) else "KEEP",
-                "risk": c.risk.value,
-                "reason": c.reason + " (fallback - AI unavailable)",
-            }
-            for c in analysis.cleanup_candidates
-        ]
-    
+        # Log the sanitized error
+        logging.getLogger(__name__).warning(f"AI structured_completion failed: {type(e).__name__}: {e}")
+        # Re-raise to surface the failure - do not silently fall back
+        ai_used = False
+        raise HTTPException(status_code=502, detail=f"AI analysis failed: {type(e).__name__}")
+
     # Merge AI recommendations with scanner results (safety validation)
     # Only use AI recommendations for paths that exist in scanner results
     scanner_paths = {c.path: c for c in analysis.cleanup_candidates}
@@ -245,6 +243,7 @@ Return JSON:
         candidates=final_candidates,
         total_recoverable=total_recoverable,
         total_recoverable_human=format_bytes(total_recoverable),
+        ai_used=ai_used,
     )
 
 
@@ -255,4 +254,8 @@ async def get_models():
     return {
         "current": provider.model_name if hasattr(provider, 'model_name') else "unknown",
         "provider": provider.__class__.__name__,
+        "provider_name": provider.provider_name,
+        "model": provider.model_name,
+        "demo_mode": settings.DEVSWEEP_DEMO_MODE,
+        "real_inference_available": provider.provider_name != "mock" and not settings.DEVSWEEP_DEMO_MODE,
     }
