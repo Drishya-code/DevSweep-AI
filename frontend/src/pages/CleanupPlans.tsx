@@ -40,15 +40,20 @@ export function CleanupPlans() {
   const [executing, setExecuting] = useState(false)
   const [executed, setExecuted] = useState(false)
   const [execResult, setExecResult] = useState<{
-    success: boolean
-    items_deleted: number
-    items_failed: number
-    bytes_freed: number
-    bytes_freed_human: string
-    errors: string[]
-    duration_seconds: number
-  } | null>(null)
-  const [error, setError] = useState<string | null>(null)
+      success: boolean
+      items_deleted: number
+      items_failed: number
+      bytes_freed: number
+      bytes_freed_human: string
+      errors: string[]
+      duration_seconds: number
+    } | null>(null)
+    const [verifyResult, setVerifyResult] = useState<{
+      passed: boolean
+      checks: Array<{ name: string; passed: boolean; message: string }>
+      errors: string[]
+    } | null>(null)
+    const [error, setError] = useState<string | null>(null)
 
   const getRiskIcon = (risk: string) => {
     switch (risk) {
@@ -82,60 +87,70 @@ export function CleanupPlans() {
   }
 
   const executePlan = async () => {
-    if (!plan) return
-    setExecuting(true)
-    setError(null)
-    try {
-      const res = await fetch('/api/cleanup/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ plan_id: plan.plan_id, approved: true }),
-      })
-      if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail || 'Execution failed')
-      }
-      const data = await res.json()
-      setExecResult(data)
-      setExecuted(true)
-      
-      // Regenerate demo data for next run
+      if (!plan) return
+      setExecuting(true)
+      setError(null)
       try {
-        await fetch('/api/demo/reset', { method: 'POST' })
-      } catch {}
-      
-      if (data.success) {
-        addCleanupToHistory({
-          plan_id: plan.plan_id,
-          items_deleted: data.items_deleted,
-          items_failed: data.items_failed,
-          bytes_freed: data.bytes_freed,
-          bytes_freed_human: data.bytes_freed_human,
-          success: data.success,
-          timestamp: new Date().toISOString(),
+        const res = await fetch('/api/cleanup/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ plan_id: plan.plan_id, approved: true }),
         })
+        if (!res.ok) {
+          const err = await res.json()
+          throw new Error(err.detail || 'Execution failed')
+        }
+        const data = await res.json()
+        setExecResult(data)
+        setExecuted(true)
+      
+        // Run verification after execution
+        const verifyData = await verifyProject()
+        if (verifyData) {
+          setVerifyResult(verifyData)
+        }
+      
+        // Regenerate demo data for next run
+        try {
+          await fetch('/api/demo/reset', { method: 'POST' })
+        } catch {}
+      
+        if (data.success) {
+          addCleanupToHistory({
+            plan_id: plan.plan_id,
+            items_deleted: data.items_deleted,
+            items_failed: data.items_failed,
+            bytes_freed: data.bytes_freed,
+            bytes_freed_human: data.bytes_freed_human,
+            success: data.success,
+            timestamp: new Date().toISOString(),
+          })
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Execution failed')
+      } finally {
+        setExecuting(false)
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Execution failed')
-    } finally {
-      setExecuting(false)
     }
-  }
 
   const verifyProject = async () => {
-    if (!currentProject) return
-    try {
-      const res = await fetch('/api/cleanup/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project_path: currentProject.project_path, project_type: 'node' }),
-      })
-      const data = await res.json()
-      return data
-    } catch {
-      return null
+      if (!currentProject || !plan) return
+      try {
+        const res = await fetch('/api/cleanup/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            project_path: currentProject.project_path, 
+            project_type: 'node',
+            plan_id: plan.plan_id
+          }),
+        })
+        const data = await res.json()
+        return data
+      } catch {
+        return null
+      }
     }
-  }
 
   const getRiskBadge = (risk: string) => (
     <span className={cn('px-2 py-0.5 text-xs font-medium rounded-full',
@@ -285,51 +300,59 @@ export function CleanupPlans() {
           </div>
         </div>
       ) : (
-        <div className="space-y-6 animate-in">
-          <div className="bg-devsweep-bgSecondary border border-devsweep-border rounded-xl p-6">
-            <div className="flex items-center gap-4 mb-6">
-              <div className="w-16 h-16 rounded-full bg-devsweep-success/10 flex items-center justify-center">
-                {execResult?.success ? (
-                  <CheckCircle className="w-8 h-8 text-devsweep-success" />
-                ) : (
-                  <XCircle className="w-8 h-8 text-devsweep-danger" />
-                )}
-              </div>
-              <div>
-                <h2 className="text-2xl font-bold text-devsweep-success">Cleanup Complete</h2>
-                <p className="text-devsweep-textSecondary">Verification: {execResult?.success ? 'PASSED' : 'FAILED'}</p>
-              </div>
-            </div>
+              <div className="space-y-6 animate-in">
+                <div className="bg-devsweep-bgSecondary border border-devsweep-border rounded-xl p-6">
+                  <div className="flex items-center gap-4 mb-6">
+                    <div className="w-16 h-16 rounded-full bg-devsweep-success/10 flex items-center justify-center">
+                      {verifyResult?.passed ? (
+                        <CheckCircle className="w-8 h-8 text-devsweep-success" />
+                      ) : (
+                        <XCircle className="w-8 h-8 text-devsweep-danger" />
+                      )}
+                    </div>
+                    <div>
+                      <h2 className="text-2xl font-bold text-devsweep-success">Cleanup Complete</h2>
+                      <p className="text-devsweep-textSecondary">Verification: {verifyResult?.passed ? 'PASSED' : 'FAILED'}</p>
+                    </div>
+                  </div>
             
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
-              <div className="bg-devsweep-bg p-4 rounded-lg border border-devsweep-border text-center">
-                <p className="text-3xl font-bold font-mono text-devsweep-success">{execResult?.bytes_freed_human}</p>
-                <p className="text-xs text-devsweep-textMuted">Storage Recovered</p>
-              </div>
-              <div className="bg-devsweep-bg p-4 rounded-lg border border-devsweep-border text-center">
-                <p className="text-3xl font-bold font-mono text-devsweep-accent">{execResult?.items_deleted}</p>
-                <p className="text-xs text-devsweep-textMuted">Items Removed</p>
-              </div>
-              <div className="bg-devsweep-bg p-4 rounded-lg border border-devsweep-border text-center">
-                <p className="text-3xl font-bold font-mono text-devsweep-success">{execResult?.success ? 'PASSED' : 'FAILED'}</p>
-                <p className="text-xs text-devsweep-textMuted">Project Verified</p>
-              </div>
-            </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+                    <div className="bg-devsweep-bg p-4 rounded-lg border border-devsweep-border text-center">
+                      <p className="text-3xl font-bold font-mono text-devsweep-success">{execResult?.bytes_freed_human}</p>
+                      <p className="text-xs text-devsweep-textMuted">Storage Recovered</p>
+                    </div>
+                    <div className="bg-devsweep-bg p-4 rounded-lg border border-devsweep-border text-center">
+                      <p className="text-3xl font-bold font-mono text-devsweep-accent">{execResult?.items_deleted}</p>
+                      <p className="text-xs text-devsweep-textMuted">Items Removed</p>
+                    </div>
+                    <div className="bg-devsweep-bg p-4 rounded-lg border border-devsweep-border text-center">
+                      <p className="text-3xl font-bold font-mono text-devsweep-success">{verifyResult?.passed ? 'PASSED' : 'FAILED'}</p>
+                      <p className="text-xs text-devsweep-textMuted">Project Verified</p>
+                    </div>
+                  </div>
 
-            <div className="p-4 bg-devsweep-success/10 border border-devsweep-success/20 rounded-lg">
-              <h4 className="font-medium text-devsweep-success flex items-center gap-2 mb-2">
-                <ShieldCheck className="w-4 h-4" />
-                Protected Files: INTACT
-              </h4>
-              <p className="text-sm text-devsweep-textSecondary">Source code, .git, .env, credentials, and project configuration were never touched.</p>
-            </div>
+                  {verifyResult && (
+                    <div className="p-4 bg-devsweep-success/10 border border-devsweep-success/20 rounded-lg">
+                      <h4 className="font-medium text-devsweep-success flex items-center gap-2 mb-2">
+                        <ShieldCheck className="w-4 h-4" />
+                        Protected Files: {verifyResult.passed ? 'INTACT' : 'ISSUES DETECTED'}
+                      </h4>
+                      <ul className="list-disc list-inside text-sm text-devsweep-textSecondary space-y-1">
+                        {verifyResult.checks.map((check, i) => (
+                          <li key={i} className={check.passed ? 'text-devsweep-success' : 'text-devsweep-danger'}>
+                            {check.name}: {check.message}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
 
-            <button onClick={() => { setExecuted(false); setExecResult(null); setPlan(null); }} className="w-full px-6 py-2 bg-devsweep-accent text-devsweep-bg rounded-lg font-medium hover:bg-devsweep-accentHover transition-colors">
-              Run Another Cleanup
-            </button>
-          </div>
-        </div>
-      )}
+                  <button onClick={() => { setExecuted(false); setExecResult(null); setVerifyResult(null); setPlan(null); }} className="w-full px-6 py-2 bg-devsweep-accent text-devsweep-bg rounded-lg font-medium hover:bg-devsweep-accentHover transition-colors">
+                    Run Another Cleanup
+                  </button>
+                </div>
+              </div>
+            )}
 
       {error && (
         <div className="p-4 bg-devsweep-danger/10 border border-devsweep-danger/20 rounded-lg flex items-center gap-3 text-devsweep-danger animate-in">

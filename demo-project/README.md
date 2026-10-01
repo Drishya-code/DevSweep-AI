@@ -1,14 +1,14 @@
 # Demo Project for DevSweep AI
-# This is a lightweight fixture that simulates a large project with 2+ GB recoverable
+# This is a lightweight fixture that simulates a project with ~128 MB recoverable
 
 # Project Structure:
-# node_modules/ - 1.8 GB (regenerable from package-lock.json)
-# dist/ - 420 MB (build output)
-# .vite/ - 86 MB (Vite cache)
-# logs/ - 12 MB (log files)
-# cache/ - 45 MB (cache)
-# coverage/ - 25 MB (test coverage)
-# .nyc_output/ - 8 MB (NYC coverage)
+# node_modules/ - ~76 MB (regenerable from package-lock.json)
+# dist/ - ~14 MB (build output)
+# .vite/ - ~1 MB (Vite cache)
+# logs/ - ~16 MB (log files, CAUTION threshold >10MB)
+# cache/ - ~16 MB (cache, CAUTION threshold >10MB)
+# coverage/ - ~3 MB (test coverage)
+# .nyc_output/ - ~1 MB (NYC coverage)
 
 # Source files (PROTECTED - never deleted):
 # src/ - ~4 MB (actual source code)
