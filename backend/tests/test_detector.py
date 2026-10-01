@@ -572,3 +572,205 @@ class TestAIAnalyzeIntegration:
             # src should not be in candidates (protected)
             for c in result.candidates:
                 assert c["path"] != "src"
+
+
+class TestRiskDowngradeProtection:
+        """Tests for preventing risk downgrades from client-supplied values."""
+    
+        def test_client_cannot_downgrade_caution_to_safe(self):
+            """Scanner says CAUTION, client says SAFE -> must be REJECTED."""
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                (root / "package.json").write_text('{}')
+                cache_dir = root / "cache"
+                cache_dir.mkdir()
+                # Make it > 10MB to trigger CAUTION
+                (cache_dir / "file.bin").write_bytes(b"x" * 20000000)
+    
+                engine = CleanupEngine(root)
+                # Fresh scanner lookup would return CAUTION for this path
+                engine.set_scanner_candidates([
+                    {"path": "cache", "risk": "CAUTION", "size_bytes": 20000000}
+                ])
+    
+                # Client tries to downgrade to SAFE
+                plan = CleanupPlan(items=[
+                    CleanupItem(path="cache", action=ActionType.DELETE, risk=EngineRiskLevel.SAFE, reason="test", estimated_bytes=20000000),
+                ])
+    
+                validation = engine.validate_plan(plan)
+                assert validation["valid"] == False
+                assert any("Risk mismatch" in e for e in validation["errors"])
+    
+                # Execution must delete NOTHING
+                result = engine.execute_plan(plan, approved=True)
+                assert result.success == False
+                assert result.items_deleted == 0
+                assert result.bytes_freed == 0
+    
+        def test_authoritative_caution_requires_approval(self):
+            """Scanner says CAUTION, client attempts SAFE -> plan rejected before execution."""
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                (root / "package.json").write_text('{}')
+                cache_dir = root / "cache"
+                cache_dir.mkdir()
+                (cache_dir / "file.bin").write_bytes(b"x" * 20000000)
+    
+                engine = CleanupEngine(root)
+                engine.set_scanner_candidates([
+                    {"path": "cache", "risk": "CAUTION", "size_bytes": 20000000}
+                ])
+    
+                # Client submits SAFE risk for CAUTION item
+                plan = CleanupPlan(items=[
+                    CleanupItem(path="cache", action=ActionType.DELETE, risk=EngineRiskLevel.SAFE, reason="test", estimated_bytes=20000000),
+                ])
+    
+                # Validation must fail
+                validation = engine.validate_plan(plan)
+                assert validation["valid"] == False
+                assert any("Risk mismatch" in e for e in validation["errors"])
+    
+                # Even with approved=True, must fail
+                result = engine.execute_plan(plan, approved=True)
+                assert result.success == False
+                assert result.items_deleted == 0
+                assert result.bytes_freed == 0
+    
+        def test_scanner_safe_client_safe_allowed(self):
+            """Scanner says SAFE, client says SAFE -> allowed."""
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                (root / "package.json").write_text('{}')
+                nm_dir = root / "node_modules"
+                nm_dir.mkdir()
+                (nm_dir / "file.js").write_bytes(b"x" * 1000000)
+    
+                engine = CleanupEngine(root)
+                engine.set_scanner_candidates([
+                    {"path": "node_modules", "risk": "SAFE", "size_bytes": 1000000}
+                ])
+    
+                plan = CleanupPlan(items=[
+                    CleanupItem(path="node_modules", action=ActionType.DELETE, risk=EngineRiskLevel.SAFE, reason="test", estimated_bytes=1000000),
+                ])
+    
+                validation = engine.validate_plan(plan)
+                assert validation["valid"] == True
+    
+                result = engine.execute_plan(plan, approved=True)
+                assert result.success == True
+                assert result.items_deleted == 1
+
+
+class TestAuthoritativeApproval:
+        """Tests that authoritative scanner risk controls approval requirements."""
+    
+        def test_caution_approval_from_scanner_not_client(self):
+            """CAUTION approval determined by scanner risk, not client risk."""
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                (root / "package.json").write_text('{}')
+                cache_dir = root / "cache"
+                cache_dir.mkdir()
+                (cache_dir / "file.bin").write_bytes(b"x" * 20000000)
+    
+                engine = CleanupEngine(root)
+                engine.set_scanner_candidates([
+                    {"path": "cache", "risk": "CAUTION", "size_bytes": 20000000}
+                ])
+    
+                # Client correctly matches scanner risk = CAUTION
+                plan = CleanupPlan(items=[
+                    CleanupItem(path="cache", action=ActionType.DELETE, risk=EngineRiskLevel.CAUTION, reason="test", estimated_bytes=20000000),
+                ])
+    
+                validation = engine.validate_plan(plan)
+                assert validation["valid"] == True
+    
+                # Without approval -> fails
+                result = engine.execute_plan(plan, approved=False)
+                assert result.success == False
+                assert any("approval" in e.lower() for e in result.errors)
+    
+                # With approval -> succeeds
+                result = engine.execute_plan(plan, approved=True)
+                assert result.success == True
+                assert result.items_deleted == 1
+
+
+class TestProtectedFileLifecycle:
+        """Tests for protected file verification with pre-cleanup state capture."""
+    
+        def test_protected_env_existed_missing_after_fails(self):
+            """.env existed before cleanup, missing afterward -> verification FAILS."""
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                (root / "package.json").write_text('{}')
+                (root / ".env").write_text("SECRET=123")
+    
+                engine = VerificationEngine(root)
+                engine.capture_pre_cleanup_state()
+    
+                # Simulate cleanup removing .env
+                (root / ".env").unlink()
+    
+                result = engine.verify("node")
+    
+                assert result.passed == False
+                checks = {c["name"]: c for c in result.checks}
+                assert checks["protected__env"]["passed"] == False
+                assert "MISSING" in checks["protected__env"]["message"]
+    
+        def test_protected_env_never_existed_not_fail(self):
+            """.env never existed -> verification does NOT fail."""
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                (root / "package.json").write_text('{}')
+                # No .env file created
+    
+                engine = VerificationEngine(root)
+                engine.capture_pre_cleanup_state()
+    
+                result = engine.verify("node")
+    
+                assert result.passed == True
+                checks = {c["name"]: c for c in result.checks}
+                assert checks["protected__env"]["passed"] == True
+                assert "N/A" in checks["protected__env"]["message"]
+    
+        def test_protected_package_json_preserved(self):
+            """package.json existed before and remains -> PASS."""
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                (root / "package.json").write_text('{"name": "test"}')
+    
+                engine = VerificationEngine(root)
+                engine.capture_pre_cleanup_state()
+    
+                result = engine.verify("node")
+    
+                assert result.passed == True
+                checks = {c["name"]: c for c in result.checks}
+                assert checks["protected_package_json"]["passed"] == True
+                assert "preserved" in checks["protected_package_json"]["message"]
+    
+        def test_protected_git_preserved(self):
+            """.git existed before and remains -> PASS."""
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                (root / "package.json").write_text('{}')
+                git_dir = root / ".git"
+                git_dir.mkdir()
+                (git_dir / "config").write_text("[core]")
+    
+                engine = VerificationEngine(root)
+                engine.capture_pre_cleanup_state()
+    
+                result = engine.verify("node")
+    
+                assert result.passed == True
+                checks = {c["name"]: c for c in result.checks}
+                assert checks["protected__git"]["passed"] == True
+                assert "preserved" in checks["protected__git"]["message"]

@@ -70,11 +70,11 @@ class CleanupEngine:
         self.git_tools = GitTools(workspace_root)
         # Cache scanner results for allowlist validation
         self._scanner_candidates: List[Dict[str, Any]] = []
-   
+  
     def set_scanner_candidates(self, candidates: List[Dict[str, Any]]):
         """Set the allowed cleanup candidates from scanner for validation."""
         self._scanner_candidates = candidates
-   
+  
     def _is_allowed_candidate(self, path: str, action: ActionType, risk: RiskLevel) -> bool:
         """Check if a path is in the scanner's allowlist and valid for deletion.
         
@@ -135,6 +135,11 @@ class CleanupEngine:
                 errors.append(f"Path not in scanner allowlist: {item.path}")
                 continue
             
+            # REJECT if client risk doesn't match authoritative scanner risk
+            if item.risk != auth_risk:
+                errors.append(f"Risk mismatch for {item.path}: client={item.risk.value} scanner={auth_risk.value}")
+                continue
+            
             # DANGEROUS check
             if auth_risk == RiskLevel.DANGEROUS:
                 errors.append(f"DANGEROUS items not allowed in plan: {item.path}")
@@ -183,8 +188,14 @@ class CleanupEngine:
                 duration_seconds=time.time() - start_time,
             )
         
-        # Check approval for CAUTION items
-        caution_items = [i for i in plan.items if i.risk == RiskLevel.CAUTION and i.action == ActionType.DELETE]
+        # Check approval for CAUTION items using AUTHORITATIVE scanner risk
+        caution_items = []
+        for item in plan.items:
+            if item.action == ActionType.DELETE:
+                auth_risk = self._get_authoritative_risk(item.path)
+                if auth_risk == RiskLevel.CAUTION:
+                    caution_items.append(item)
+        
         if caution_items and not approved:
             return CleanupResult(
                 success=False,
@@ -235,6 +246,17 @@ class VerificationEngine:
         self.workspace_root = workspace_root.resolve()
         self.fs_tools = FilesystemTools(workspace_root)
         self.git_tools = GitTools(workspace_root)
+        # Track protected files that existed before cleanup
+        self._pre_cleanup_protected: Dict[str, bool] = {}
+    
+    def capture_pre_cleanup_state(self):
+        """Capture which protected files exist before cleanup."""
+        self._pre_cleanup_protected = {}
+        protected_files = ["package.json", ".git", ".env"]
+        for path_name in protected_files:
+            path = self.workspace_root / path_name
+            if self.fs_tools.is_protected(path):
+                self._pre_cleanup_protected[path_name] = path.exists()
     
     def verify(self, project_type: str = "unknown") -> VerificationResult:
         """Run verification checks based on project type."""
@@ -262,29 +284,52 @@ class VerificationEngine:
                 "message": "Not a git repository (skipped)",
             })
         
-        # Check 3: Protected files still exist
+        # Check 3: Protected files lifecycle
         protected_checks = [
-            ("package.json", "package.json exists"),
-            (".git", "git directory exists"),
-            (".env", ".env not deleted"),
+            ("package.json", "package.json"),
+            (".git", "git directory"),
+            (".env", ".env file"),
         ]
         
-        for path_name, message in protected_checks:
+        for path_name, display_name in protected_checks:
             path = self.workspace_root / path_name
             is_protected = self.fs_tools.is_protected(path)
-            if is_protected and path.exists():
-                # Protected file that exists must remain
+            
+            if not is_protected:
+                # Not a protected file for this project type
+                continue
+            
+            # Check if it existed before cleanup
+            existed_before = self._pre_cleanup_protected.get(path_name, False)
+            exists_now = path.exists()
+            
+            if existed_before and not exists_now:
+                # Existed before, now missing = FAIL
                 checks.append({
                     "name": f"protected_{path_name.replace('.', '_')}",
-                    "passed": True,
-                    "message": f"{message}: OK",
+                    "passed": False,
+                    "message": f"{display_name} existed before cleanup but is now MISSING",
                 })
-            elif is_protected and not path.exists():
-                # Protected file that doesn't exist in the first place - not a failure
+            elif existed_before and exists_now:
+                # Existed before, still there = PASS
                 checks.append({
                     "name": f"protected_{path_name.replace('.', '_')}",
                     "passed": True,
-                    "message": f"{message}: not present in project (OK)",
+                    "message": f"{display_name}: OK (preserved)",
+                })
+            elif not existed_before and not exists_now:
+                # Never existed = NOT APPLICABLE
+                checks.append({
+                    "name": f"protected_{path_name.replace('.', '_')}",
+                    "passed": True,
+                    "message": f"{display_name}: not present in project (N/A)",
+                })
+            else:
+                # Not existed before but exists now (shouldn't happen in cleanup)
+                checks.append({
+                    "name": f"protected_{path_name.replace('.', '_')}",
+                    "passed": True,
+                    "message": f"{display_name}: newly created (OK)",
                 })
         
         # Check 4: Source code directories exist
