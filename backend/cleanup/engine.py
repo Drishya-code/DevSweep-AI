@@ -30,6 +30,8 @@ class CleanupItem:
     reason: str
     estimated_bytes: int
     regeneration_command: Optional[str] = None
+    # AI-validated risk (from Nemotron analysis), used alongside scanner risk
+    ai_risk: Optional[RiskLevel] = None
 
 
 @dataclass
@@ -111,6 +113,26 @@ class CleanupEngine:
                 return RiskLevel(candidate_risk)
         return None
     
+    def _get_effective_risk(self, item: CleanupItem, scanner_risk: RiskLevel) -> RiskLevel:
+        """Calculate effective risk: max of scanner risk and AI risk (more restrictive wins).
+        
+        Rules:
+        - Scanner SAFE + AI CAUTION = CAUTION
+        - Scanner CAUTION + AI SAFE = CAUTION
+        - Scanner DANGEROUS = DANGEROUS (DELETE prohibited)
+        """
+        risk_order = {"SAFE": 0, "CAUTION": 1, "DANGEROUS": 2}
+        scanner_val = risk_order.get(scanner_risk.value, 0)
+        
+        # If item has AI risk, use the more restrictive (max)
+        if item.ai_risk:
+            ai_val = risk_order.get(item.ai_risk.value, 0)
+            effective_val = max(scanner_val, ai_val)
+        else:
+            effective_val = scanner_val
+        
+        return RiskLevel(["SAFE", "CAUTION", "DANGEROUS"][effective_val])
+    
     def validate_plan(self, plan: CleanupPlan) -> Dict[str, Any]:
         """Validate a cleanup plan against safety rules."""
         errors = []
@@ -136,12 +158,16 @@ class CleanupEngine:
                 continue
             
             # REJECT if client risk doesn't match authoritative scanner risk
+            # Client cannot downgrade risk (e.g., scanner=CAUTION, client=SAFE)
             if item.risk != auth_risk:
                 errors.append(f"Risk mismatch for {item.path}: client={item.risk.value} scanner={auth_risk.value}")
                 continue
             
+            # Calculate effective risk (max of scanner and AI risk) for approval
+            effective_risk = self._get_effective_risk(item, auth_risk)
+            
             # DANGEROUS check
-            if auth_risk == RiskLevel.DANGEROUS:
+            if effective_risk == RiskLevel.DANGEROUS:
                 errors.append(f"DANGEROUS items not allowed in plan: {item.path}")
                 continue
             
@@ -156,8 +182,8 @@ class CleanupEngine:
                 errors.append(f"Path not allowed: {item.path}")
                 continue
             
-            # Use authoritative risk for warnings
-            if final_risk == RiskLevel.CAUTION and item.action == ActionType.DELETE:
+            # Use effective risk for warnings
+            if effective_risk == RiskLevel.CAUTION and item.action == ActionType.DELETE:
                 warnings.append(f"CAUTION item requires explicit approval: {item.path}")
         
         # Check git status
@@ -188,13 +214,15 @@ class CleanupEngine:
                 duration_seconds=time.time() - start_time,
             )
         
-        # Check approval for CAUTION items using AUTHORITATIVE scanner risk
+        # Check approval for CAUTION items using EFFECTIVE risk (max of scanner + AI)
         caution_items = []
         for item in plan.items:
             if item.action == ActionType.DELETE:
                 auth_risk = self._get_authoritative_risk(item.path)
-                if auth_risk == RiskLevel.CAUTION:
-                    caution_items.append(item)
+                if auth_risk:
+                    effective_risk = self._get_effective_risk(item, auth_risk)
+                    if effective_risk == RiskLevel.CAUTION:
+                        caution_items.append(item)
         
         if caution_items and not approved:
             return CleanupResult(
@@ -417,14 +445,18 @@ class PlanGenerator:
             # Determine regeneration command
             regen_cmd = self._get_regeneration_command(path)
             
-            items.append(CleanupItem(
+            # Create item with AI risk if provided
+            ai_risk = candidate.get("ai_risk")
+            item = CleanupItem(
                 path=path,
                 action=action,
                 risk=risk,
                 reason=reason,
                 estimated_bytes=size,
                 regeneration_command=regen_cmd,
-            ))
+                ai_risk=RiskLevel(ai_risk) if ai_risk else None,
+            )
+            items.append(item)
         
         # Calculate totals
         safe_bytes = sum(i.estimated_bytes for i in items if i.risk == RiskLevel.SAFE and i.action == ActionType.DELETE)

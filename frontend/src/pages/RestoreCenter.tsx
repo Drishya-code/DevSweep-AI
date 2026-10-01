@@ -14,6 +14,7 @@ import {
   Download,
   Copy,
   Clock,
+  AlertTriangle,
 } from 'lucide-react'
 import { useState } from 'react'
 
@@ -67,18 +68,18 @@ export function RestoreCenter() {
   const handleExecute = async (option: typeof restoreOptions[0]) => {
     setSelectedOption(option.name)
     setExecuting(option.name)
-    setOutput(`$ ${option.commands.join(' && ')}\n\n[Simulated execution - connect to backend for real execution]\n\n`)
+    setOutput(`$ ${option.commands.join(' && ')}\n\n[PREVIEW: Simulated execution - backend restore not yet implemented]\n\n`)
     
     // Simulate execution
     for (const cmd of option.commands) {
       await new Promise(r => setTimeout(r, 500))
       setOutput(prev => prev + `$ ${cmd}\n[Running...]\n`)
       await new Promise(r => setTimeout(r, 1000))
-      setOutput(prev => prev + `[Completed]\n`)
+      setOutput(prev => prev + `[Completed - Preview only]\n`)
     }
     
     setExecuting(null)
-    setOutput(prev => prev + '\n✅ Restore option completed successfully!\n')
+    setOutput(prev => prev + '\n⚠️ Preview complete - No actual changes made. Restore engine not yet implemented.\n')
   }
 
   const getRiskBadge = (risk: string) => (
@@ -94,13 +95,14 @@ export function RestoreCenter() {
   return (
     <div className="space-y-6 animate-in max-w-4xl">
       <div>
-        <h1 className="text-2xl font-bold">Restore Center</h1>
-        <p className="text-devsweep-textSecondary mt-1">Reconstruct cleaned environments and restore project state</p>
+        <h1 className="text-2xl font-bold">Restore Center <span className="text-xs bg-devsweep-warning/10 text-devsweep-warning px-2 py-0.5 rounded ml-2">Preview</span></h1>
+        <p className="text-devsweep-textSecondary mt-1">Reconstruct cleaned environments and restore project state (Preview: restore execution not yet implemented)</p>
       </div>
 
       {!currentProject ? (
         <div className="bg-devsweep-bgSecondary border border-devsweep-border rounded-xl p-12 text-center">
           <RotateCcw className="w-16 h-16 mx-auto mb-4 text-devsweep-textMuted opacity-50" />
+          <AlertTriangle className="w-8 h-8 mx-auto mb-4 text-devsweep-warning/50" />
           <h3 className="text-lg font-medium mb-2">No project selected</h3>
           <p className="text-devsweep-textMuted mb-6">Scan a workspace first to see restore options</p>
         </div>
@@ -127,7 +129,7 @@ export function RestoreCenter() {
           <div className="bg-devsweep-bgSecondary border border-devsweep-border rounded-xl overflow-hidden">
             <div className="p-6 border-b border-devsweep-border bg-devsweep-bgTertiary/50">
               <h2 className="text-lg font-semibold">Available Restore Options</h2>
-              <p className="text-devsweep-textSecondary text-sm mt-1">Choose how to restore your project</p>
+              <p className="text-devsweep-textSecondary text-sm mt-1">Choose how to restore your project (Preview only)</p>
             </div>
 
             <div className="p-6 space-y-4">
@@ -185,7 +187,7 @@ export function RestoreCenter() {
                             className="px-4 py-2 bg-devsweep-accent text-devsweep-bg rounded-lg font-medium hover:bg-devsweep-accentHover transition-colors flex items-center gap-2"
                           >
                             <Play className="w-4 h-4" />
-                            Execute
+                            Execute Preview
                           </button>
                         )}
                       </div>
@@ -199,7 +201,7 @@ export function RestoreCenter() {
           {output && (
             <div className="bg-devsweep-bg border border-devsweep-border rounded-xl overflow-hidden">
               <div className="p-4 border-b border-devsweep-border bg-devsweep-bgTertiary/50 flex items-center justify-between">
-                <h3 className="font-medium">Execution Output</h3>
+                <h3 className="font-medium">Execution Output (Preview)</h3>
                 <div className="flex items-center gap-2">
                   <button className="p-2 hover:bg-devsweep-bgTertiary rounded-lg transition-colors" onClick={() => navigator.clipboard.writeText(output)}>
                     <Copy className="w-4 h-4 text-devsweep-textMuted" />
@@ -216,7 +218,8 @@ export function RestoreCenter() {
           <div className="bg-devsweep-bgSecondary border border-devsweep-border rounded-xl p-6">
             <h3 className="font-medium mb-4 flex items-center gap-2">
               <AlertCircle className="w-5 h-5 text-devsweep-warning" />
-              Prerequisites
+              <AlertTriangle className="w-5 h-5 text-devsweep-warning" />
+              Prerequisites & Limitations
             </h3>
             <ul className="list-disc list-inside text-devsweep-textSecondary space-y-2">
               <li>Git installed and configured</li>
@@ -224,6 +227,7 @@ export function RestoreCenter() {
               <li>Access to package registries (npm, PyPI, etc.)</li>
               <li>Network connectivity for dependency downloads</li>
               <li>Sufficient disk space for reconstruction</li>
+              <li><strong>Limitation:</strong> Restore execution is a preview - no actual commands are run. Backend restore engine not yet implemented.</li>
             </ul>
           </div>
         </div>

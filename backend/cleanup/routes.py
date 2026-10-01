@@ -74,6 +74,9 @@ class VerificationResponse(BaseModel):
 # In-memory storage for plans (use database in production)
 _cleanup_plans: Dict[str, Dict] = {}
 
+# In-memory storage for pre-cleanup protected file state (persisted per plan)
+_pre_cleanup_snapshots: Dict[str, Dict[str, bool]] = {}
+
 
 def format_bytes(bytes_val: int) -> str:
     for unit in ["B", "KB", "MB", "GB", "TB"]:
@@ -124,6 +127,11 @@ async def create_cleanup_plan(request: CleanupPlanRequest):
     if caution_items:
         plan.warnings.append(f"{len(caution_items)} CAUTION items require explicit approval")
     
+    # Capture pre-cleanup protected file state
+    pre_cleanup_engine = VerificationEngine(project_path)
+    pre_cleanup_engine.capture_pre_cleanup_state()
+    pre_cleanup_snapshot = pre_cleanup_engine._pre_cleanup_protected
+    
     # Generate plan ID and store
     import uuid
     plan_id = str(uuid.uuid4())[:8]
@@ -131,6 +139,7 @@ async def create_cleanup_plan(request: CleanupPlanRequest):
         "plan": plan,
         "project_path": str(project_path),
     }
+    _pre_cleanup_snapshots[plan_id] = pre_cleanup_snapshot
     
     return CleanupPlanResponse(
         plan_id=plan_id,
@@ -153,6 +162,9 @@ async def execute_cleanup(request: ExecuteCleanupRequest):
     
     plan = plan_data["plan"]
     project_path = Path(plan_data["project_path"])
+    
+    # Get the pre-cleanup snapshot for verification
+    pre_cleanup_snapshot = _pre_cleanup_snapshots.get(request.plan_id, {})
     
     # Get fresh scanner candidates for allowlist validation
     analysis = analyze_project(project_path)
@@ -186,6 +198,7 @@ async def execute_cleanup(request: ExecuteCleanupRequest):
 async def verify_project(request: dict, project_type: str = "unknown"):
     """Verify project health after cleanup."""
     project_path = request.get("project_path")
+    plan_id = request.get("plan_id")
     if not project_path:
         raise HTTPException(status_code=422, detail="project_path is required")
     
@@ -194,7 +207,13 @@ async def verify_project(request: dict, project_type: str = "unknown"):
         raise HTTPException(status_code=404, detail="Project path not found")
     
     engine = VerificationEngine(path)
-    engine.capture_pre_cleanup_state()
+    
+    # Use pre-cleanup snapshot if plan_id provided, otherwise capture current state
+    if plan_id and plan_id in _pre_cleanup_snapshots:
+        engine._pre_cleanup_protected = _pre_cleanup_snapshots[plan_id]
+    else:
+        engine.capture_pre_cleanup_state()
+    
     result = engine.verify(project_type)
     
     return VerificationResponse(
@@ -261,11 +280,24 @@ async def generate_plan_from_scan(request: dict, default_risk_level: str = "SAFE
                 "risk": c["risk"],
                 "reason": c["reason"],
                 "size_bytes": c["size_bytes"],
+                "ai_risk": c.get("risk"),  # Pass AI risk along
             }
             for c in analysis.candidates if c["action"] == "DELETE"
         ],
         default_risk_level=RiskLevel(default_risk_level),
     )
+    
+    # Set AI risk on plan items
+    for item in plan.items:
+        for c in analysis.candidates:
+            if c["path"] == item.path and c["action"] == "DELETE":
+                item.ai_risk = RiskLevel(c["risk"])
+                break
+    
+    # Capture pre-cleanup protected file state
+    pre_cleanup_engine = VerificationEngine(path)
+    pre_cleanup_engine.capture_pre_cleanup_state()
+    pre_cleanup_snapshot = pre_cleanup_engine._pre_cleanup_protected
     
     # Store plan
     import uuid
@@ -274,6 +306,7 @@ async def generate_plan_from_scan(request: dict, default_risk_level: str = "SAFE
         "plan": plan,
         "project_path": str(path),
     }
+    _pre_cleanup_snapshots[plan_id] = pre_cleanup_snapshot
     
     return CleanupPlanResponse(
         plan_id=plan_id,
