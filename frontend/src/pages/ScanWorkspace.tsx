@@ -18,11 +18,11 @@ import {
 } from 'lucide-react'
 
 export function ScanWorkspace() {
-  const { currentProject, setCurrentProject, addScanToHistory, isScanning, setIsScanning, demoMode, setCurrentPlan } = useDevSweep()
+  const { currentProject, setCurrentProject, addScanToHistory, isScanning, setIsScanning, demoMode, setCurrentPlan, aiProvider } = useDevSweep()
   const navigate = useNavigate()
   const [customPath, setCustomPath] = useState('')
   const [scanResult, setScanResult] = useState<typeof currentProject | null>(null)
-  const [aiAnalysisResult, setAiAnalysisResult] = useState<{ candidates: any[], ai_used: boolean } | null>(null)
+  const [aiAnalysisResult, setAiAnalysisResult] = useState<{ candidates: any[], ai_used: boolean, provider_name: string, model: string, analysis_id?: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [creatingPlan, setCreatingPlan] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
@@ -42,10 +42,7 @@ export function ScanWorkspace() {
         throw new Error(err.detail || 'AI analysis failed')
       }
       const data = await res.json()
-      if (!data.ai_used) {
-        throw new Error('AI analysis unavailable: real model inference did not succeed')
-      }
-      setAiAnalysisResult({ candidates: data.candidates, ai_used: data.ai_used })
+      setAiAnalysisResult({ candidates: data.candidates, ai_used: data.ai_used === true, provider_name: data.provider_name || 'unknown', model: data.model || 'unknown', analysis_id: data.analysis_id })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'AI analysis failed')
       setAiAnalysisResult(null)
@@ -56,7 +53,7 @@ export function ScanWorkspace() {
 
   const handleCreatePlan = async () => {
     if (!scanResult) return
-    if (!aiAnalysisResult || !aiAnalysisResult.ai_used) {
+    if (!aiAnalysisResult || !aiAnalysisResult.ai_used || !aiAnalysisResult.analysis_id) {
       setError('AI analysis required before creating plan. Run AI analysis first.')
       return
     }
@@ -82,6 +79,7 @@ export function ScanWorkspace() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           project_path: scanResult.project_path,
+          analysis_id: aiAnalysisResult.analysis_id,
           items,
         }),
       })
@@ -115,6 +113,7 @@ export function ScanWorkspace() {
         throw new Error(err.detail || 'Scan failed')
       }
       const data = await res.json()
+      setAiAnalysisResult(null)
       setScanResult(data)
       setCurrentProject(data)
       addScanToHistory(data)
@@ -132,6 +131,7 @@ export function ScanWorkspace() {
       const res = await fetch('/api/scan/demo')
       if (!res.ok) throw new Error('Demo scan failed')
       const data = await res.json()
+      setAiAnalysisResult(null)
       setScanResult(data)
       setCurrentProject(data)
       addScanToHistory(data)
@@ -228,7 +228,6 @@ export function ScanWorkspace() {
                 <p className="text-xs text-devsweep-textMuted">Total Recoverable</p>
               </div>
             </div>
-
             <div>
               <h3 className="font-medium mb-3">Cleanup Candidates</h3>
               <div className="space-y-2 max-h-96 overflow-y-auto">
@@ -292,7 +291,7 @@ export function ScanWorkspace() {
               {/* Create Cleanup Plan button - requires AI analysis first */}
               <button
                 onClick={handleCreatePlan}
-                disabled={creatingPlan || !aiAnalysisResult || !aiAnalysisResult.ai_used}
+                disabled={creatingPlan || analyzing || !aiAnalysisResult || !aiAnalysisResult.ai_used || !aiAnalysisResult.analysis_id}
                 className="px-6 py-2 bg-devsweep-accent text-devsweep-bg rounded-lg font-medium hover:bg-devsweep-accentHover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {creatingPlan ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
@@ -303,6 +302,16 @@ export function ScanWorkspace() {
                 View Details
               </button>
             </div>
+            {aiAnalysisResult && (
+              <p className="text-sm text-devsweep-textSecondary" role="status">
+                {aiAnalysisResult.ai_used
+                  ? `Analyzed by ${aiAnalysisResult.provider_name} (${aiAnalysisResult.model})`
+                  : `Mock/demo analysis by ${aiAnalysisResult.provider_name} (${aiAnalysisResult.model}); real-AI cleanup plans are unavailable.`}
+              </p>
+            )}
+            {!aiAnalysisResult && aiProvider === 'mock' && (
+              <p className="text-sm text-devsweep-warning">Demo/mock provider active. AI analysis is labeled as demo and cannot authorize cleanup plans.</p>
+            )}
           </div>
         )}
       </div>

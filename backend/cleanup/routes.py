@@ -38,6 +38,7 @@ class CleanupItemRequest(BaseModel):
 class CleanupPlanRequest(BaseModel):
     items: List[CleanupItemRequest]
     project_path: str
+    analysis_id: Optional[str] = None
     approved: bool = False
 
 
@@ -113,13 +114,29 @@ async def create_cleanup_plan(request: CleanupPlanRequest):
     if not project_path.exists():
         raise HTTPException(status_code=404, detail="Project path not found")
 
+    # Require a successful Nebius analysis for this exact project. Use server-side
+    # analysis data so client-supplied risks/actions cannot replace AI output.
+    from ai.routes import take_verified_analysis
+    verified = take_verified_analysis(request.analysis_id or "", project_path)
+    if not verified:
+        raise HTTPException(status_code=403, detail="Successful Nebius analysis is required before creating a cleanup plan.")
+
     # Authoritative scanner validation: re-scan the project to get real scanner risks
     analysis = analyze_project(project_path)
     scanner_candidate_map = {c.path: c for c in analysis.cleanup_candidates}
 
-    # Convert request items to engine items
+    verified_candidates = {c["path"]: c for c in verified["candidates"]}
+    # The client may select analyzed paths, but risk/action/reason/size come from
+    # the server's verified analysis result.
     items = []
     for item_req in request.items:
+        ai_candidate = verified_candidates.get(item_req.path)
+        if ai_candidate is None:
+            raise HTTPException(status_code=400, detail=f"Path '{item_req.path}' was not part of the verified AI analysis.")
+        if item_req.path not in scanner_candidate_map:
+            raise HTTPException(status_code=400, detail=f"Path '{item_req.path}' not found in authoritative scanner results.")
+        if ai_candidate["action"] != "DELETE":
+            continue
         # Re-scan authoritative risk check: client-supplied risk/scanner_risk CANNOT override real scanner
         if item_req.path in scanner_candidate_map:
             authoritative_scanner_risk = scanner_candidate_map[item_req.path].risk.value
@@ -130,14 +147,14 @@ async def create_cleanup_plan(request: CleanupPlanRequest):
                 detail=f"Path '{item_req.path}' not found in authoritative scanner results. Only scanner-validated paths may be included in a cleanup plan."
             )
 
-        ai_risk = item_req.ai_risk if item_req.ai_risk else None
+        ai_risk = ai_candidate.get("ai_risk")
 
         items.append(CleanupItem(
             path=item_req.path,
-            action=ActionType(item_req.action),
+            action=ActionType(ai_candidate["action"]),
             risk=RiskLevel(authoritative_scanner_risk),
-            reason=item_req.reason,
-            estimated_bytes=item_req.estimated_bytes,
+            reason=ai_candidate["reason"],
+            estimated_bytes=ai_candidate["size_bytes"],
             regeneration_command=item_req.regeneration_command,
             ai_risk=RiskLevel(ai_risk) if ai_risk else None,
         ))
@@ -316,6 +333,11 @@ async def generate_plan_from_scan(request: dict, default_risk_level: str = "SAFE
     # Run the AI analysis
     analyze_request = AnalyzeRequest(project_path=project_path)
     analysis = await ai_analyze(analyze_request)
+    if not analysis.ai_used:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Successful Nebius inference is required to generate a cleanup plan (provider: {analysis.provider_name}).",
+        )
 
     # Generate plan from AI-analyzed candidates
     path = Path(project_path).resolve()

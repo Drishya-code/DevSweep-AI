@@ -8,6 +8,7 @@ import json
 import logging
 
 from ai.factory import get_ai_provider
+from ai.nebius_provider import NebiusProvider
 from ai.prompts import DEVSWEEP_SYSTEM_PROMPT
 from scanner.detector import analyze_project, RiskLevel
 from config import settings
@@ -45,7 +46,23 @@ class AnalyzeResponse(BaseModel):
     candidates: List[Dict[str, Any]]
     total_recoverable: int
     total_recoverable_human: str
-    ai_used: bool = True  # True if real AI inference succeeded
+    ai_used: bool = False  # True only after successful Nebius inference
+    provider_name: str = "mock"
+    model: str = "unknown"
+    demo_mode: bool = False
+    analysis_id: Optional[str] = None
+
+
+# Short-lived, in-process proof that the submitted candidates came from successful
+# Nebius inference. Cleanup plan creation consumes this server-side result.
+_verified_analyses: Dict[str, Dict[str, Any]] = {}
+
+
+def take_verified_analysis(analysis_id: str, project_path: Path) -> Optional[Dict[str, Any]]:
+    result = _verified_analyses.pop(analysis_id, None)
+    if not result or Path(result["project_path"]).resolve() != project_path.resolve():
+        return None
+    return result
 
 
 def format_bytes(bytes_val: int) -> str:
@@ -59,7 +76,11 @@ def format_bytes(bytes_val: int) -> str:
 @router.post("/chat", response_model=ChatResponse)
 async def ai_chat(request: ChatRequest):
     """Chat with the AI agent."""
-    provider = get_ai_provider()
+    try:
+        provider = get_ai_provider()
+    except Exception as e:
+        logging.getLogger(__name__).error("AI provider initialization failed: %s", type(e).__name__)
+        raise HTTPException(status_code=503, detail="Nebius provider configuration failed. Check backend configuration.") from e
     
     # Build context - convert to provider ChatMessage format
     from ai.provider import ChatMessage as ProviderChatMessage
@@ -102,7 +123,8 @@ Total recoverable: {format_bytes(analysis.total_recoverable_bytes)}
             suggestions=response.suggestions if hasattr(response, 'suggestions') else [],
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI error: {str(e)}")
+        logging.getLogger(__name__).warning("AI chat completion failed: %s", type(e).__name__)
+        raise HTTPException(status_code=502, detail=f"AI request failed: {type(e).__name__}") from e
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
@@ -125,8 +147,12 @@ async def ai_analyze(request: AnalyzeRequest):
             "scanner_reason": c.reason,
         })
     
-    # Call Nemotron for AI analysis
-    provider = get_ai_provider()
+    # Call the configured provider. Configuration errors must not turn into demo success.
+    try:
+        provider = get_ai_provider()
+    except Exception as e:
+        logging.getLogger(__name__).error("AI provider initialization failed: %s", type(e).__name__)
+        raise HTTPException(status_code=503, detail="Nebius provider configuration failed. Check backend configuration.") from e
     from ai.provider import ChatMessage as ProviderChatMessage
     
     # Create structured prompt for Nemotron
@@ -169,7 +195,7 @@ Return JSON:
     ]
 
     ai_recommendations = []
-    ai_used = True
+    ai_used = False
     try:
             response = await provider.structured_completion(
                 messages=messages,
@@ -196,10 +222,16 @@ Return JSON:
             ai_recommendations = response.get("recommendations", [])
     except Exception as e:
         # Log the sanitized error
-        logging.getLogger(__name__).warning(f"AI structured_completion failed: {type(e).__name__}: {e}")
+        logging.getLogger(__name__).warning("AI structured_completion failed: %s", type(e).__name__)
         # Re-raise to surface the failure - do not silently fall back
-        ai_used = False
-        raise HTTPException(status_code=502, detail=f"AI analysis failed: {type(e).__name__}")
+        error_type = type(e).__name__
+        if error_type in {"AuthenticationError", "PermissionDeniedError"}:
+            raise HTTPException(status_code=502, detail="Nebius authentication failed. Verify backend credentials.") from e
+        if error_type == "RateLimitError":
+            raise HTTPException(status_code=429, detail="Nebius rate limit reached. Retry later.") from e
+        raise HTTPException(status_code=502, detail=f"Nebius inference failed: {error_type}") from e
+
+    ai_used = isinstance(provider, NebiusProvider)
 
     # Merge AI recommendations with scanner results (safety validation)
     # Only use AI recommendations for paths that exist in scanner results
@@ -235,6 +267,16 @@ Return JSON:
     
     total_recoverable = sum(c["size_bytes"] for c in final_candidates if c["action"] == "DELETE" and c["risk"] in ("SAFE", "CAUTION"))
 
+    analysis_id = None
+    if ai_used:
+        if len(_verified_analyses) >= 256:
+            _verified_analyses.pop(next(iter(_verified_analyses)))
+        analysis_id = str(uuid.uuid4())
+        _verified_analyses[analysis_id] = {
+            "project_path": str(Path(request.project_path).resolve()),
+            "candidates": final_candidates,
+        }
+
     return AnalyzeResponse(
         project_type=analysis.project_type.value,
         framework=analysis.framework,
@@ -244,13 +286,21 @@ Return JSON:
         total_recoverable=total_recoverable,
         total_recoverable_human=format_bytes(total_recoverable),
         ai_used=ai_used,
+        provider_name=provider.provider_name,
+        model=provider.model_name,
+        demo_mode=settings.DEVSWEEP_DEMO_MODE,
+        analysis_id=analysis_id,
     )
 
 
 @router.get("/models")
 async def get_models():
     """Get available AI models."""
-    provider = get_ai_provider()
+    try:
+        provider = get_ai_provider()
+    except Exception as e:
+        logging.getLogger(__name__).error("AI provider initialization failed: %s", type(e).__name__)
+        raise HTTPException(status_code=503, detail="Nebius provider configuration failed. Check backend configuration.") from e
     return {
         "current": provider.model_name if hasattr(provider, 'model_name') else "unknown",
         "provider": provider.__class__.__name__,

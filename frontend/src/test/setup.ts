@@ -30,6 +30,9 @@ const createMockContext = (overrides = {}) => ({
   setCurrentPlan: vi.fn(),
   cleanupHistory: [],
   scanHistory: [],
+  aiProvider: 'nebius',
+  aiModel: 'nvidia/nemotron-3-super-120b-a12b',
+  realInferenceAvailable: true,
   ...overrides,
 })
 

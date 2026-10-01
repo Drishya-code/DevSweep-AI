@@ -53,7 +53,7 @@ const mockPlan = {
 
 function renderWithProviders(ui: React.ReactElement, project = mockCurrentProject) {
   // Set the mock context with the current project
-  setMockContext({ currentProject: project })
+  setMockContext({ currentProject: project, aiProvider: 'nebius', aiModel: 'nvidia/nemotron-3-super-120b-a12b', realInferenceAvailable: true })
   
   return render(
     <MemoryRouter initialEntries={['/plans']}>
@@ -80,8 +80,16 @@ describe('CleanupPlans', () => {
   it('shows "Generate Cleanup Plan with AI" button when project exists but no plan', () => {
     renderWithProviders(<CleanupPlans />, mockCurrentProject)
     
-    expect(screen.getByText('AI Analysis Ready')).toBeInTheDocument()
+    expect(screen.getByText('Nebius configured (nvidia/nemotron-3-super-120b-a12b)')).toBeInTheDocument()
     expect(screen.getByText('Generate Cleanup Plan with AI')).toBeInTheDocument()
+  })
+
+  it('labels mock mode and disables plan generation without Nebius', () => {
+    setMockContext({ currentProject: mockCurrentProject, aiProvider: 'mock', aiModel: 'devsweep-demo', realInferenceAvailable: false })
+    render(<MemoryRouter initialEntries={['/plans']}><CleanupPlans /></MemoryRouter>)
+
+    expect(screen.getByText('Mock/demo provider (mock)')).toBeInTheDocument()
+    expect(screen.getByText('Generate Cleanup Plan with AI')).toBeDisabled()
   })
 
   it('calls /api/cleanup/generate-plan when Generate Plan is clicked', async () => {
