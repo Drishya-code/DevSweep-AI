@@ -175,24 +175,15 @@ export function Settings() {
               <div key={fi} className="space-y-2">
                 <label className="block text-sm font-medium">{field.label}</label>
                 {field.type === 'text' && (
-                  <input
-                    type="text"
-                    value={settings[field.key as keyof typeof settings] as string}
-                    onChange={(e) => setSettings(prev => ({ ...prev, [field.key]: e.target.value }))}
-                    placeholder={field.placeholder}
-                    className="w-full px-4 py-2 bg-devsweep-bg border border-devsweep-border rounded-lg text-devsweep-text placeholder-devsweep-textMuted focus:border-devsweep-accent focus:outline-none focus:ring-1 focus:ring-devsweep-accent"
-                  />
-                )}
-                {field.type === 'password' && (
-                  <input
-                    type="password"
-                    value={settings[field.key as keyof typeof settings] as string}
-                    onChange={(e) => setSettings(prev => ({ ...prev, [field.key]: e.target.value }))}
-                    placeholder={field.placeholder}
-                    className="w-full px-4 py-2 bg-devsweep-bg border border-devsweep-border rounded-lg text-devsweep-text placeholder-devsweep-textMuted focus:border-devsweep-accent focus:outline-none focus:ring-1 focus:ring-devsweep-accent"
-                  />
-                )}
-                {field.type === 'number' && (
+                                  <input
+                                    type="text"
+                                    value={settings[field.key as keyof typeof settings] as string}
+                                    onChange={(e) => setSettings(prev => ({ ...prev, [field.key]: e.target.value }))}
+                                    placeholder={field.placeholder}
+                                    className="w-full px-4 py-2 bg-devsweep-bg border border-devsweep-border rounded-lg text-devsweep-text placeholder-devsweep-textMuted focus:border-devsweep-accent focus:outline-none focus:ring-1 focus:ring-devsweep-accent"
+                                  />
+                                )}
+                                {field.type === 'number' && (
                   <input
                     type="number"
                     value={settings[field.key as keyof typeof settings] as number}
@@ -232,19 +223,19 @@ export function Settings() {
               </div>
             ))}
             {section.action && (
-              <button
-                onClick={section.action.onClick}
-                disabled={section.action.loading || saving}
-                className={cn('px-6 py-2 rounded-lg font-medium transition-colors flex items-center gap-2',
-                  section.action.loading || testing 
-                    ? 'bg-devsweep-bg border border-devsweep-border text-devsweep-textMuted' 
-                    : 'bg-devsweep-accent text-devsweep-bg hover:bg-devsweep-accentHover'
-                )}
-              >
-                {section.action.loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <section.action.icon className="w-4 h-4" />}
-                {section.action.label}
-              </button>
-            )}
+                          <button
+                            onClick={section.action.onClick}
+                            disabled={section.action.loading || saving}
+                            className={cn('px-6 py-2 rounded-lg font-medium transition-colors flex items-center gap-2',
+                              section.action.loading
+                                ? 'bg-devsweep-bg border border-devsweep-border text-devsweep-textMuted' 
+                                : 'bg-devsweep-accent text-devsweep-bg hover:bg-devsweep-accentHover'
+                            )}
+                          >
+                            {section.action.loading ? <section.action.icon className="w-4 h-4" /> : <section.action.icon className="w-4 h-4" />}
+                            {section.action.label}
+                          </button>
+                        )}
           </div>
         </div>
       ))}
@@ -260,8 +251,7 @@ export function Settings() {
           disabled={saving}
           className="px-6 py-2 bg-devsweep-accent text-devsweep-bg rounded-lg font-medium hover:bg-devsweep-accentHover transition-colors flex items-center gap-2"
         >
-          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-          {saving ? 'Saving...' : saved ? 'Saved!' : 'Save Settings'}
+          {saving ? 'Saving...' : 'Save Settings'}
         </button>
       </div>
 
