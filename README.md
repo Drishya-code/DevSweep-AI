@@ -36,21 +36,21 @@ DevSweep AI
 │   ├── Projects - Manage multiple projects
 │   ├── Scan Workspace - Interactive scanning
 │   ├── Cleanup Plans - Review and approve plans
-│   ├── Cleanup History - Audit trail
-│   ├── Restore Center - Reconstruct environments
+│   ├── Cleanup History - Audit trail (Preview - not persisted)
+│   ├── Restore Center - Reconstruct environments (Preview - not executed)
 │   ├── AI Agent - Chat interface for natural language requests
-│   └── Settings - Configuration
+│   └── Settings - Configuration (no API key storage)
 │
 ├── Backend (Python + FastAPI)
 │   ├── AI Agent (Nebius Token Factory + NVIDIA Nemotron)
 │   ├── Project Scanner (detect type, framework, dependencies, real git status)
 │   ├── Cleanup Engine (safety rules, risk assessment, scanner allowlist enforcement)
-│   ├── Verification Engine (project health after cleanup)
+│   ├── Verification Engine (project health after cleanup, pre-cleanup state tracking)
 │   └── Tools (filesystem, git with protection allowlists)
 │
 └── Demo Project Fixture
-    ├── ~128 MB of real generated files (deterministic seed)
-    └── Regenerated on demand via /api/scan/demo/reset
+     ├── ~128 MB of real generated files (deterministic seed)
+     └── Regenerated on demand via /api/scan/demo/reset
 ```
 
 ## AI Workflow

@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react'
 import { cn } from '../utils/helpers'
 import { useDevSweep } from '../context/DevSweepContext'
 import {
-  Key,
   Database,
   HardDrive,
   Shield,
@@ -11,16 +10,12 @@ import {
   Github,
   ExternalLink,
   Save,
-  Loader2,
-  CheckCircle,
-  XCircle,
   Sparkles,
   Bot,
   Search,
 } from 'lucide-react'
 
 interface SettingsState {
-  nebiusApiKey: string
   nebiusBaseUrl: string
   nebiusModel: string
   workspaceRoot: string
@@ -75,21 +70,18 @@ interface Section {
 export function Settings() {
     const { demoMode, setDemoMode } = useDevSweep()
     const [settings, setSettings] = useState<SettingsState>({
-    nebiusApiKey: '',
-    nebiusBaseUrl: 'https://api.studio.nebius.ai/v1',
-    nebiusModel: 'nemotron-3-ultra',
-    workspaceRoot: '',
-    defaultRiskLevel: 'SAFE',
-    maxFileSize: 100,
-    autoScan: false,
-    notifications: true,
-    theme: 'dark',
-    demoMode: false,
-  })
+        nebiusBaseUrl: 'https://api.tokenfactory.us-central1.nebius.com/v1/',
+        nebiusModel: 'nvidia/nemotron-3-super-120b-a12b',
+        workspaceRoot: '',
+        defaultRiskLevel: 'SAFE',
+        maxFileSize: 100,
+        autoScan: false,
+        notifications: true,
+        theme: 'dark',
+        demoMode: false,
+      })
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null)
-  const [testing, setTesting] = useState(false)
 
   useEffect(() => {
     // Load from localStorage
@@ -114,28 +106,6 @@ export function Settings() {
     setTimeout(() => setSaved(false), 3000)
   }
 
-  const handleTestConnection = async () => {
-    if (!settings.nebiusApiKey) {
-      setTestResult({ success: false, message: 'Please enter an API key first' })
-      return
-    }
-    setTesting(true)
-    setTestResult(null)
-    try {
-      const res = await fetch('/api/test-ai', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(settings),
-      })
-      const data = await res.json()
-      setTestResult({ success: res.ok, message: data.message || (res.ok ? 'Connection successful!' : 'Connection failed') })
-    } catch (error) {
-      setTestResult({ success: false, message: error instanceof Error ? error.message : 'Connection failed' })
-    } finally {
-      setTesting(false)
-    }
-  }
-
   const handleDemoToggle = (enabled: boolean) => {
     setDemoMode(enabled)
     setSettings(prev => ({ ...prev, demoMode: enabled }))
@@ -143,16 +113,14 @@ export function Settings() {
 
   const sections = [
     {
-      title: 'AI Provider',
-      icon: Bot,
-      description: 'Configure Nebius Token Factory + NVIDIA Nemotron',
-      fields: [
-        { key: 'nebiusApiKey', label: 'Nebius API Key', type: 'password' as const, placeholder: 'Enter your NEBIUS_API_KEY', icon: Key },
-        { key: 'nebiusBaseUrl', label: 'Base URL', type: 'text' as const, placeholder: 'https://api.studio.nebius.ai/v1', icon: ExternalLink },
-        { key: 'nebiusModel', label: 'Model', type: 'select' as const, options: ['nemotron-3-ultra', 'nemotron-3-5-lightning', 'nemotron-4-ultra'], icon: Sparkles },
-      ],
-      action: { label: 'Test Connection', onClick: handleTestConnection, loading: testing, icon: CheckCircle },
-    },
+          title: 'AI Provider',
+          icon: Bot,
+          description: 'Configure NVIDIA Nemotron via Nebius Token Factory. API key must be set in backend environment (NEBIUS_API_KEY).',
+          fields: [
+            { key: 'nebiusBaseUrl', label: 'Base URL', type: 'text' as const, placeholder: 'https://api.tokenfactory.us-central1.nebius.com/v1/', icon: ExternalLink },
+            { key: 'nebiusModel', label: 'Model', type: 'select' as const, options: ['nvidia/nemotron-3-super-120b-a12b', 'nvidia/nemotron-3-5-lightning', 'nvidia/nemotron-4-ultra'], icon: Sparkles },
+          ],
+        },
     {
       title: 'Workspace',
       icon: Database,
@@ -185,22 +153,13 @@ export function Settings() {
   ]
 
   return (
-    <div className="space-y-6 animate-in max-w-3xl">
-      <div>
-        <h1 className="text-2xl font-bold">Settings</h1>
-        <p className="text-devsweep-textSecondary mt-1">Configure DevSweep AI behavior and integrations</p>
-      </div>
-
-      {testResult && (
-        <div className={cn('p-4 rounded-lg border flex items-center gap-3', 
-          testResult.success ? 'bg-devsweep-success/10 border-devsweep-success/20 text-devsweep-success' : 'bg-devsweep-danger/10 border-devsweep-danger/20 text-devsweep-danger'
-        )}>
-          {testResult.success ? <CheckCircle className="w-5 h-5" /> : <XCircle className="w-5 h-5" />}
-          <span>{testResult.message}</span>
+      <div className="space-y-6 animate-in max-w-3xl">
+        <div>
+          <h1 className="text-2xl font-bold">Settings</h1>
+          <p className="text-devsweep-textSecondary mt-1">Configure DevSweep AI behavior and integrations</p>
         </div>
-      )}
 
-      {sections.map((section, si) => (
+        {sections.map((section, si) => (
         <div key={si} className="bg-devsweep-bgSecondary border border-devsweep-border rounded-xl overflow-hidden">
           <div className="p-6 border-b border-devsweep-border bg-devsweep-bgTertiary/50">
             <div className="flex items-center gap-3">
