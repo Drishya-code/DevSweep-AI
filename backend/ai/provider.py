@@ -137,6 +137,7 @@ class MockProvider(AIProvider):
                     {"path": "node_modules", "action": "DELETE", "risk": "SAFE", "reason": "Regenerable using package-lock.json"},
                     {"path": "dist", "action": "DELETE", "risk": "SAFE", "reason": "Generated build output"},
                     {"path": ".vite", "action": "DELETE", "risk": "SAFE", "reason": "Vite cache directory"},
+                    {"path": ".nyc_output", "action": "DELETE", "risk": "SAFE", "reason": "NYC coverage output"},
                     {"path": "logs", "action": "DELETE", "risk": "CAUTION", "reason": "Log files may contain debugging info"},
                     {"path": "cache", "action": "DELETE", "risk": "CAUTION", "reason": "Cache files may have performance impact"},
                 ]
