@@ -12,11 +12,11 @@ class NebiusProvider(AIProvider):
         self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
-        model: str = "nemotron-3-ultra",
+        model: str = "nvidia/nemotron-3-super-120b-a12b",
     ):
         self._api_key = api_key or os.getenv("NEBIUS_API_KEY")
-        self._base_url = base_url or os.getenv("NEBIUS_BASE_URL", "https://api.studio.nebius.ai/v1")
-        self._model = model or os.getenv("NEBIUS_MODEL", "nemotron-3-ultra")
+        self._base_url = base_url or os.getenv("NEBIUS_BASE_URL", "https://api.tokenfactory.us-central1.nebius.com/v1/")
+        self._model = model or os.getenv("NEBIUS_MODEL", "nvidia/nemotron-3-super-120b-a12b")
 
         if not self._api_key:
             raise ValueError("NEBIUS_API_KEY is required for NebiusProvider")

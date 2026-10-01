@@ -277,22 +277,15 @@ async def generate_plan_from_scan(request: dict, default_risk_level: str = "SAFE
         [
             {
                 "path": c["path"],
-                "risk": c["risk"],
+                "risk": c["risk"],  # This is scanner risk
+                "ai_risk": c.get("ai_risk"),  # This is AI risk
                 "reason": c["reason"],
                 "size_bytes": c["size_bytes"],
-                "ai_risk": c.get("risk"),  # Pass AI risk along
             }
             for c in analysis.candidates if c["action"] == "DELETE"
         ],
         default_risk_level=RiskLevel(default_risk_level),
     )
-    
-    # Set AI risk on plan items
-    for item in plan.items:
-        for c in analysis.candidates:
-            if c["path"] == item.path and c["action"] == "DELETE":
-                item.ai_risk = RiskLevel(c["risk"])
-                break
     
     # Capture pre-cleanup protected file state
     pre_cleanup_engine = VerificationEngine(path)

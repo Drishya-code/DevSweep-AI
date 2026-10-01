@@ -216,21 +216,19 @@ Return JSON:
         
         scanner_candidate = scanner_paths[path]
         
-        # Determine final risk - use higher of scanner and AI risk
-        risk_order = {"SAFE": 0, "CAUTION": 1, "DANGEROUS": 2}
-        scanner_risk_val = risk_order.get(scanner_candidate.risk.value, 0)
-        ai_risk_val = risk_order.get(ai_rec.get("risk", "SAFE"), 0)
-        final_risk_val = max(scanner_risk_val, ai_risk_val)
-        final_risk = ["SAFE", "CAUTION", "DANGEROUS"][final_risk_val]
+        # Scanner risk remains authoritative for validation
+        scanner_risk = scanner_candidate.risk.value
+        ai_risk = ai_rec.get("risk", "SAFE")
         
-        # Reject DANGEROUS deletions
+        # Reject DANGEROUS deletions based on scanner risk
         action = ai_rec.get("action", "KEEP")
-        if final_risk == "DANGEROUS" and action == "DELETE":
+        if scanner_risk == "DANGEROUS" and action == "DELETE":
             action = "KEEP"
         
         final_candidates.append({
             "path": path,
-            "risk": final_risk,
+            "risk": scanner_risk,  # Deterministic scanner risk (authoritative for validation)
+            "ai_risk": ai_risk,    # AI-assessed risk (can be higher, used for approval)
             "reason": ai_rec.get("reason", scanner_candidate.reason),
             "size_bytes": scanner_candidate.size_bytes,
             "size_human": format_bytes(scanner_candidate.size_bytes),

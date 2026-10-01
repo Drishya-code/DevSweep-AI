@@ -130,6 +130,17 @@ class MockProvider(AIProvider):
                 ],
                 "total_recoverable_bytes": 2306000000,
             }
+        elif "recommendations" in str(response_schema):
+            # Return AI recommendations - upgrade some SAFE to CAUTION to test AI risk upgrades
+            return {
+                "recommendations": [
+                    {"path": "node_modules", "action": "DELETE", "risk": "SAFE", "reason": "Regenerable using package-lock.json"},
+                    {"path": "dist", "action": "DELETE", "risk": "SAFE", "reason": "Generated build output"},
+                    {"path": ".vite", "action": "DELETE", "risk": "SAFE", "reason": "Vite cache directory"},
+                    {"path": "logs", "action": "DELETE", "risk": "CAUTION", "reason": "Log files may contain debugging info"},
+                    {"path": "cache", "action": "DELETE", "risk": "CAUTION", "reason": "Cache files may have performance impact"},
+                ]
+            }
         elif "plan" in str(response_schema):
             return {
                 "plan": [
