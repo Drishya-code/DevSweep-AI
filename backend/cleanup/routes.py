@@ -194,6 +194,7 @@ async def verify_project(request: dict, project_type: str = "unknown"):
         raise HTTPException(status_code=404, detail="Project path not found")
     
     engine = VerificationEngine(path)
+    engine.capture_pre_cleanup_state()
     result = engine.verify(project_type)
     
     return VerificationResponse(
