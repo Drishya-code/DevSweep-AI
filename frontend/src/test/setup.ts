@@ -1,0 +1,50 @@
+import '@testing-library/jest-dom'
+import { vi } from 'vitest'
+import React from 'react'
+
+// Mock react-router-dom
+const mockNavigate = vi.fn()
+const mockLocation = { pathname: '/' }
+const mockParams = {}
+
+vi.mock('react-router-dom', async (importOriginal) => {
+  const actual = await importOriginal<any>()
+  return {
+    ...(actual as object),
+    useNavigate: () => mockNavigate,
+    useLocation: () => mockLocation,
+    useParams: () => mockParams,
+  }
+})
+
+// Mock DevSweepContext
+const mockContextValue = {
+  currentProject: null,
+  setCurrentProject: vi.fn(),
+  addScanToHistory: vi.fn(),
+  addCleanupToHistory: vi.fn(),
+  isScanning: false,
+  setIsScanning: vi.fn(),
+  demoMode: false,
+  currentPlan: null,
+  setCurrentPlan: vi.fn(),
+  cleanupHistory: [],
+  scanHistory: [],
+}
+
+const MockProvider = ({ children }: { children: React.ReactNode }) => children
+
+vi.mock('../context/DevSweepContext', async (importOriginal) => {
+  const actual = await importOriginal<any>()
+  return {
+    ...(actual as object),
+    useDevSweep: () => mockContextValue,
+    DevSweepProvider: MockProvider,
+  }
+})
+
+// Mock window.fetch
+;(globalThis as any).fetch = vi.fn()
+
+// Export mocks for tests to use
+export { mockNavigate, mockContextValue }

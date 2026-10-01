@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { cn, formatBytes } from '../utils/helpers'
 import { useDevSweep } from '../context/DevSweepContext'
+import { useNavigate } from 'react-router-dom'
 import {
   Search,
   FolderOpen,
@@ -15,10 +16,53 @@ import {
 } from 'lucide-react'
 
 export function ScanWorkspace() {
-  const { currentProject, setCurrentProject, addScanToHistory, isScanning, setIsScanning, demoMode } = useDevSweep()
+  const { currentProject, setCurrentProject, addScanToHistory, isScanning, setIsScanning, demoMode, setCurrentPlan } = useDevSweep()
+  const navigate = useNavigate()
   const [customPath, setCustomPath] = useState('')
   const [scanResult, setScanResult] = useState<typeof currentProject | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [creatingPlan, setCreatingPlan] = useState(false)
+
+  const handleCreatePlan = async () => {
+    if (!scanResult) return
+    setCreatingPlan(true)
+    setError(null)
+    try {
+      // Create cleanup plan from scan results
+      const items = scanResult.cleanup_candidates
+        .filter(c => c.risk !== 'DANGEROUS') // Never include DANGEROUS items
+        .map(c => ({
+          path: c.path,
+          action: 'DELETE',
+          risk: c.risk,
+          scanner_risk: c.risk,
+          reason: c.reason,
+          estimated_bytes: c.size_bytes,
+        }))
+      
+      const res = await fetch('/api/cleanup/plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          project_path: scanResult.project_path,
+          items,
+        }),
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'Failed to create cleanup plan')
+      }
+      const data = await res.json()
+      // Store plan in context for CleanupPlans page
+      setCurrentPlan(data)
+      // Navigate to plans page
+      navigate('/plans')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create cleanup plan')
+    } finally {
+      setCreatingPlan(false)
+    }
+  }
 
   const handleScan = async (path?: string) => {
     setIsScanning(true)
@@ -198,9 +242,13 @@ export function ScanWorkspace() {
             </div>
 
             <div className="flex gap-3 pt-4 border-t border-devsweep-border">
-              <button className="px-6 py-2 bg-devsweep-accent text-devsweep-bg rounded-lg font-medium hover:bg-devsweep-accentHover transition-colors flex items-center gap-2">
-                <Trash2 className="w-4 h-4" />
-                Create Cleanup Plan
+              <button
+                onClick={handleCreatePlan}
+                disabled={creatingPlan || scanResult.cleanup_candidates.length === 0}
+                className="px-6 py-2 bg-devsweep-accent text-devsweep-bg rounded-lg font-medium hover:bg-devsweep-accentHover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {creatingPlan ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                {creatingPlan ? 'Creating Plan...' : 'Create Cleanup Plan'}
               </button>
               <button className="px-6 py-2 bg-devsweep-bg border border-devsweep-border rounded-lg font-medium hover:border-devsweep-accent/50 transition-colors flex items-center gap-2">
                 <Info className="w-4 h-4" />
