@@ -77,6 +77,9 @@ const mockAIAnalysisResult = {
     },
   ],
   ai_used: true,
+  provider_name: 'nebius',
+  model: 'nvidia/nemotron-3-super-120b-a12b',
+  analysis_id: 'verified-analysis-1',
   total_recoverable: 170000000,
   total_recoverable_human: '162.1 MB',
   project_type: 'node',
@@ -266,7 +269,7 @@ describe('ScanWorkspace', () => {
     expect(screen.getByText('Create Cleanup Plan')).toBeDisabled()
   })
 
-  it('shows error when AI analysis succeeds but ai_used is false', async () => {
+  it('labels mock analysis and keeps plan creation disabled when ai_used is false', async () => {
     ;(global.fetch as vi.Mock)
       .mockResolvedValueOnce({
         ok: true,
@@ -275,7 +278,7 @@ describe('ScanWorkspace', () => {
       // Mock AI analysis with ai_used=false
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ ...mockAIAnalysisResult, ai_used: false }),
+        json: async () => ({ ...mockAIAnalysisResult, ai_used: false, provider_name: 'mock', model: 'devsweep-demo', analysis_id: null }),
       })
 
     renderWithProviders(<ScanWorkspace />)
@@ -294,7 +297,7 @@ describe('ScanWorkspace', () => {
     fireEvent.click(screen.getByText('Run AI Analysis'))
 
     await waitFor(() => {
-      expect(screen.getByText('AI analysis unavailable: real model inference did not succeed')).toBeInTheDocument()
+      expect(screen.getByText(/Mock\/demo analysis by mock/)).toBeInTheDocument()
     })
     
     // Create Cleanup Plan should still be disabled
@@ -351,6 +354,7 @@ describe('ScanWorkspace', () => {
     expect(planCall[0]).toBe('/api/cleanup/plan')
     const payload = JSON.parse(planCall[1].body)
     expect(payload.project_path).toBe('/test/project')
+    expect(payload.analysis_id).toBe('verified-analysis-1')
     expect(payload.items).toHaveLength(3)
     expect(payload.items[0].path).toBe('node_modules')
     expect(payload.items[0].action).toBe('DELETE')

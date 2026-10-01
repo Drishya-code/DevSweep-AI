@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 from typing import Optional
 from pydantic_settings import BaseSettings
@@ -31,7 +30,12 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = Field(default="INFO", description="Logging level")
 
     class Config:
-        env_file = ".env"
+        # Support the repository-root example and existing backend/.env files
+        # independently of the process working directory. Backend settings win.
+        env_file = (
+            Path(__file__).resolve().parent.parent / ".env",
+            Path(__file__).resolve().parent / ".env",
+        )
         env_file_encoding = "utf-8"
         case_sensitive = True
 

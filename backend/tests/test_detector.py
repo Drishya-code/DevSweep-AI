@@ -31,8 +31,37 @@ from cleanup.engine import (
 from ai.routes import ai_analyze
 from ai.routes import AnalyzeRequest
 from ai.provider import RecordingTestProvider
+from ai.provider import MockProvider
+from ai.nebius_provider import NebiusProvider
 from ai.factory import get_ai_provider, reset_ai_provider
 import asyncio
+
+
+class FakeNebiusProvider(NebiusProvider):
+    """Nebius-shaped test provider; never makes network requests."""
+    def __init__(self, failure=None):
+        self._model = "nvidia/nemotron-3-super-120b-a12b"
+        self._mock = MockProvider(model_name=self._model)
+        self.failure = failure
+
+    async def structured_completion(self, messages, response_schema, temperature=0.1, max_tokens=4096):
+        if self.failure:
+            raise self.failure
+        return await self._mock.structured_completion(messages, response_schema, temperature, max_tokens)
+
+    async def chat_completion(self, messages, tools=None, tool_choice=None, temperature=0.1, max_tokens=4096):
+        if self.failure:
+            raise self.failure
+        return await self._mock.chat_completion(messages, tools, tool_choice, temperature, max_tokens)
+
+
+@pytest.fixture(autouse=True)
+def use_fake_nebius(monkeypatch):
+    import ai.routes as ai_routes
+    ai_routes._verified_analyses.clear()
+    monkeypatch.setattr(ai_routes, "get_ai_provider", FakeNebiusProvider)
+    yield
+    ai_routes._verified_analyses.clear()
 
 
 class TestProjectDetection:
@@ -803,7 +832,8 @@ class TestRegressionPhase36:
                 reason="test",
                 estimated_bytes=20000000,
             )]
-            request = CleanupPlanRequest(items=items, project_path=str(root))
+            analysis_result = asyncio.run(ai_analyze(AnalyzeRequest(project_path=str(root))))
+            request = CleanupPlanRequest(items=items, project_path=str(root), analysis_id=analysis_result.analysis_id)
             
             # Call the plan creation function directly
             result = asyncio.run(create_cleanup_plan(request))
@@ -1292,5 +1322,83 @@ class TestRegressionPhase36:
             exec_data = exec_resp.json()
             assert exec_data["success"] == True
             assert exec_data["items_deleted"] > 0
+
+
+class TestNebiusInferenceGate:
+    def _project(self, root):
+        (root / "package.json").write_text('{}')
+        cache = root / "cache"
+        cache.mkdir()
+        (cache / "item.bin").write_bytes(b"x" * 12_000_000)
+
+    def test_successful_nebius_analysis_reports_real_inference(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = asyncio.run(ai_analyze(AnalyzeRequest(project_path=tmpdir)))
+            assert result.ai_used is True
+            assert result.provider_name == "nebius"
+            assert result.model == "nvidia/nemotron-3-super-120b-a12b"
+            assert result.analysis_id
+
+    def test_nebius_provider_error_is_reported_without_fallback(self, monkeypatch):
+        import ai.routes as ai_routes
+        monkeypatch.setattr(ai_routes, "get_ai_provider", lambda: FakeNebiusProvider(RuntimeError("upstream failure")))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from fastapi import HTTPException
+            with pytest.raises(HTTPException) as exc:
+                asyncio.run(ai_analyze(AnalyzeRequest(project_path=tmpdir)))
+            assert exc.value.status_code == 502
+            assert "Nebius inference failed" in exc.value.detail
+
+    def test_provider_configuration_error_is_clear_and_sanitized(self, monkeypatch):
+        import ai.routes as ai_routes
+        from fastapi.testclient import TestClient
+        from main import app
+        monkeypatch.setattr(ai_routes, "get_ai_provider", lambda: (_ for _ in ()).throw(RuntimeError("sensitive detail")))
+        response = TestClient(app).get("/api/ai/models")
+        assert response.status_code == 503
+        assert "provider configuration failed" in response.json()["detail"]
+        assert "sensitive detail" not in response.json()["detail"]
+
+    def test_both_plan_routes_reject_mock_analysis(self, monkeypatch):
+        import ai.routes as ai_routes
+        from fastapi.testclient import TestClient
+        from main import app
+        monkeypatch.setattr(ai_routes, "get_ai_provider", lambda: MockProvider())
+        client = TestClient(app)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self._project(root)
+            analysis_resp = client.post("/api/ai/analyze", json={"project_path": str(root)})
+            assert analysis_resp.status_code == 200
+            analysis = analysis_resp.json()
+            assert analysis["ai_used"] is False
+            assert analysis["provider_name"] == "mock"
+            assert analysis["analysis_id"] is None
+
+            candidate = next(c for c in analysis["candidates"] if c["path"] == "cache")
+            plan_resp = client.post("/api/cleanup/plan", json={
+                "project_path": str(root), "analysis_id": analysis["analysis_id"],
+                "items": [{"path": "cache", "action": candidate["action"], "risk": candidate["risk"],
+                           "reason": candidate["reason"], "estimated_bytes": candidate["size_bytes"]}],
+            })
+            assert plan_resp.status_code == 403
+
+            generated_resp = client.post("/api/cleanup/generate-plan", json={"project_path": str(root)})
+            assert generated_resp.status_code == 403
+
+    def test_plan_requires_verified_analysis_for_same_project(self):
+        from fastapi.testclient import TestClient
+        from main import app
+        client = TestClient(app)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self._project(root)
+            response = client.post("/api/cleanup/plan", json={
+                "project_path": str(root), "analysis_id": "missing",
+                "items": [{"path": "cache", "action": "DELETE", "risk": "SAFE",
+                           "reason": "test", "estimated_bytes": 1000}],
+            })
+            assert response.status_code == 403
 
 

@@ -11,6 +11,7 @@ interface DevSweepContextType {
   isCleaning: boolean
   aiProvider: string
   aiModel: string
+  realInferenceAvailable: boolean
   demoMode: boolean
   currentPlan: any | null
   
@@ -35,6 +36,7 @@ export function DevSweepProvider({ children }: { children: ReactNode }) {
   const [isCleaning, setIsCleaning] = useState(false)
   const [aiProvider, setAiProvider] = useState('mock')
   const [aiModel, setAiModel] = useState('devsweep-mock')
+  const [realInferenceAvailable, setRealInferenceAvailable] = useState(false)
   const [demoMode, setDemoMode] = useState(false)
   const [currentPlan, setCurrentPlanState] = useState<any>(null)
 
@@ -46,6 +48,21 @@ export function DevSweepProvider({ children }: { children: ReactNode }) {
         setDemoMode(data.demo_mode)
       })
       .catch(() => {})
+    fetch('/api/ai/models')
+      .then(res => {
+        if (!res.ok) throw new Error('AI provider unavailable')
+        return res.json()
+      })
+      .then(data => {
+        setAiProvider(data.provider_name || 'unknown')
+        setAiModel(data.model || 'unknown')
+        setRealInferenceAvailable(data.real_inference_available === true)
+      })
+      .catch(() => {
+        setAiProvider('unavailable')
+        setAiModel('unknown')
+        setRealInferenceAvailable(false)
+      })
   }, [])
 
   const addScanToHistory = (scan: ScanResponse) => {
@@ -70,6 +87,7 @@ export function DevSweepProvider({ children }: { children: ReactNode }) {
       isCleaning,
       aiProvider,
       aiModel,
+      realInferenceAvailable,
       demoMode,
       currentPlan,
       setCurrentProject,

@@ -18,7 +18,7 @@ import {
 } from 'lucide-react'
 
 export function CleanupPlans() {
-  const { currentProject, currentPlan: contextPlan, setCurrentPlan, addCleanupToHistory } = useDevSweep()
+  const { currentProject, currentPlan: contextPlan, setCurrentPlan, addCleanupToHistory, aiProvider, aiModel, realInferenceAvailable } = useDevSweep()
   const [plan, setPlan] = useState<{
     plan_id: string
     items: Array<{
@@ -191,7 +191,7 @@ export function CleanupPlans() {
           <FileText className="w-16 h-16 mx-auto mb-4 text-devsweep-textMuted opacity-50" />
           <h3 className="text-lg font-medium mb-2">No project selected</h3>
           <p className="text-devsweep-textMuted mb-6">Scan a workspace first to generate a cleanup plan</p>
-          <button onClick={generatePlan} disabled={loading} className="px-6 py-2 bg-devsweep-accent text-devsweep-bg rounded-lg font-medium hover:bg-devsweep-accentHover transition-colors disabled:opacity-50">
+          <button onClick={generatePlan} disabled={loading || !realInferenceAvailable} className="px-6 py-2 bg-devsweep-accent text-devsweep-bg rounded-lg font-medium hover:bg-devsweep-accentHover transition-colors disabled:opacity-50">
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Generate Plan'}
           </button>
         </div>
@@ -199,17 +199,17 @@ export function CleanupPlans() {
         <div className="bg-devsweep-bgSecondary border border-devsweep-border rounded-xl p-6 space-y-6">
           <div className="text-center">
             <Bot className="w-16 h-16 mx-auto mb-4 text-devsweep-accent opacity-50" />
-            <h3 className="text-lg font-medium mb-2">AI Analysis Ready</h3>
-            <p className="text-devsweep-textMuted">Scan complete. Generate a cleanup plan with AI-powered recommendations.</p>
+            <h3 className="text-lg font-medium mb-2">{realInferenceAvailable ? `Nebius configured (${aiModel})` : `Mock/demo provider (${aiProvider})`}</h3>
+            <p className="text-devsweep-textMuted">{realInferenceAvailable ? 'Scan complete. Generate a cleanup plan with AI-powered recommendations.' : 'Mock analysis is available for development, but cannot authorize cleanup plan creation.'}</p>
           </div>
           <div className="p-4 bg-devsweep-accent/10 border border-devsweep-accent/20 rounded-lg space-y-2">
             <div className="flex items-center gap-3">
               <Bot className="w-5 h-5 text-devsweep-accent" />
-              <span className="font-medium">Powered by NVIDIA Nemotron via Nebius Token Factory</span>
+              <span className="font-medium">{realInferenceAvailable ? 'Powered by NVIDIA Nemotron via Nebius Token Factory' : 'Demo/mock analysis'}</span>
             </div>
             <p className="text-sm text-devsweep-textSecondary ml-8">AI analyzes candidates, provides risk classification and reasoning. Application validates against safety rules before execution.</p>
           </div>
-          <button onClick={generatePlan} disabled={loading} className="w-full px-6 py-3 bg-devsweep-accent text-devsweep-bg rounded-lg font-medium hover:bg-devsweep-accentHover transition-colors flex items-center justify-center gap-2 disabled:opacity-50">
+          <button onClick={generatePlan} disabled={loading || !realInferenceAvailable} className="w-full px-6 py-3 bg-devsweep-accent text-devsweep-bg rounded-lg font-medium hover:bg-devsweep-accentHover transition-colors flex items-center justify-center gap-2 disabled:opacity-50">
             <Sparkles className="w-5 h-5" />
             {loading ? (
               <>

@@ -1,4 +1,3 @@
-import os
 from typing import Optional
 from .provider import AIProvider, MockProvider
 from .nebius_provider import NebiusProvider
@@ -18,9 +17,8 @@ def create_ai_provider() -> AIProvider:
                 model=settings.NEBIUS_MODEL,
             )
         except Exception as e:
-            # Fall back to mock if Nebius fails to initialize
-            print(f"Warning: Failed to initialize Nebius provider: {e}. Falling back to mock.")
-            return MockProvider(model_name="nebius-fallback")
+            # Keep initialization errors visible to callers; never disguise them as demo analysis.
+            raise RuntimeError("Nebius provider configuration failed. Check the backend Nebius settings.") from e
 
     # No API key and not in demo mode - use mock with warning
     print("Warning: NEBIUS_API_KEY not set. Using mock provider. Set NEBIUS_API_KEY for real AI features.")
