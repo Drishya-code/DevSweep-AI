@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { cn, formatBytes } from '../utils/helpers'
 import { useDevSweep } from '../context/DevSweepContext'
 import {
@@ -18,7 +18,7 @@ import {
 } from 'lucide-react'
 
 export function CleanupPlans() {
-  const { currentProject, setCurrentPlan, addCleanupToHistory } = useDevSweep()
+  const { currentProject, currentPlan: contextPlan, setCurrentPlan, addCleanupToHistory } = useDevSweep()
   const [plan, setPlan] = useState<{
     plan_id: string
     items: Array<{
@@ -38,7 +38,7 @@ export function CleanupPlans() {
     requires_approval: boolean
     warnings: string[]
     verification_steps: string[]
-  } | null>(null)
+  } | null>(contextPlan) // Initialize from context
   const [loading, setLoading] = useState(false)
   const [executing, setExecuting] = useState(false)
   const [executed, setExecuted] = useState(false)
@@ -58,6 +58,18 @@ export function CleanupPlans() {
     } | null>(null)
     const [error, setError] = useState<string | null>(null)
   const [confirmed, setConfirmed] = useState(false)
+  
+  // Sync local plan state when context plan changes (e.g., after navigation from ScanWorkspace)
+  useEffect(() => {
+    if (contextPlan && (!plan || contextPlan.plan_id !== plan.plan_id)) {
+      setPlan(contextPlan)
+      setConfirmed(false)
+      setExecuted(false)
+      setExecResult(null)
+      setVerifyResult(null)
+      setError(null)
+    }
+  }, [contextPlan])
 
   const getRiskIcon = (risk: string) => {
     switch (risk) {

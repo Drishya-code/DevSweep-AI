@@ -12,6 +12,7 @@ interface DevSweepContextType {
   aiProvider: string
   aiModel: string
   demoMode: boolean
+  currentPlan: any | null
   
   // Actions
   setCurrentProject: (project: ScanResponse | null) => void
@@ -70,6 +71,7 @@ export function DevSweepProvider({ children }: { children: ReactNode }) {
       aiProvider,
       aiModel,
       demoMode,
+      currentPlan,
       setCurrentProject,
       addScanToHistory,
       setIsScanning,

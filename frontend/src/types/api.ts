@@ -1,6 +1,8 @@
 export interface CleanupCandidateResponse {
   path: string
   risk: 'SAFE' | 'CAUTION' | 'DANGEROUS'
+  ai_risk?: 'SAFE' | 'CAUTION' | 'DANGEROUS'  // AI-assessed risk (can be higher than scanner)
+  effective_risk?: 'SAFE' | 'CAUTION' | 'DANGEROUS'  // Max of scanner and AI risk
   reason: string
   size_bytes: number
   size_human: string

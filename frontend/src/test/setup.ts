@@ -17,8 +17,8 @@ vi.mock('react-router-dom', async (importOriginal) => {
   }
 })
 
-// Mock DevSweepContext
-const mockContextValue = {
+// Mock DevSweepContext - create a factory function to allow customizing the mock
+const createMockContext = (overrides = {}) => ({
   currentProject: null,
   setCurrentProject: vi.fn(),
   addScanToHistory: vi.fn(),
@@ -30,7 +30,10 @@ const mockContextValue = {
   setCurrentPlan: vi.fn(),
   cleanupHistory: [],
   scanHistory: [],
-}
+  ...overrides,
+})
+
+let mockContextValue = createMockContext()
 
 const MockProvider = ({ children }: { children: React.ReactNode }) => children
 
@@ -47,4 +50,7 @@ vi.mock('../context/DevSweepContext', async (importOriginal) => {
 ;(globalThis as any).fetch = vi.fn()
 
 // Export mocks for tests to use
-export { mockNavigate, mockContextValue }
+export { mockNavigate, createMockContext }
+export const setMockContext = (overrides: any) => {
+  mockContextValue = createMockContext(overrides)
+}

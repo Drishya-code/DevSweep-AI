@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { CleanupPlans } from '../pages/CleanupPlans'
 import { MemoryRouter } from 'react-router-dom'
+import { setMockContext } from '../test/setup'
 
 const mockCurrentProject = {
   project_path: '/test/project',
@@ -51,6 +52,9 @@ const mockPlan = {
 }
 
 function renderWithProviders(ui: React.ReactElement, project = mockCurrentProject) {
+  // Set the mock context with the current project
+  setMockContext({ currentProject: project })
+  
   return render(
     <MemoryRouter initialEntries={['/plans']}>
       {ui}
@@ -62,6 +66,8 @@ describe('CleanupPlans', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(global.fetch as vi.Mock).mockReset()
+    // Reset to default mock context
+    setMockContext({})
   })
 
   it('shows "No project selected" when no currentProject', () => {
