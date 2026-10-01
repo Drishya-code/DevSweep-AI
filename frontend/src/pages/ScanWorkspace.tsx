@@ -13,6 +13,8 @@ import {
   Sparkles,
   Trash2,
   Info,
+  Brain,
+  Zap,
 } from 'lucide-react'
 
 export function ScanWorkspace() {
@@ -20,24 +22,57 @@ export function ScanWorkspace() {
   const navigate = useNavigate()
   const [customPath, setCustomPath] = useState('')
   const [scanResult, setScanResult] = useState<typeof currentProject | null>(null)
+  const [aiAnalysisResult, setAiAnalysisResult] = useState<{ candidates: any[], ai_used: boolean } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [creatingPlan, setCreatingPlan] = useState(false)
+  const [analyzing, setAnalyzing] = useState(false)
+
+  const handleAnalyze = async () => {
+    if (!scanResult) return
+    setAnalyzing(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/ai/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_path: scanResult.project_path }),
+      })
+      if (!res.ok) {
+        const err = await res.json()
+        throw new Error(err.detail || 'AI analysis failed')
+      }
+      const data = await res.json()
+      if (!data.ai_used) {
+        throw new Error('AI analysis unavailable: real model inference did not succeed')
+      }
+      setAiAnalysisResult({ candidates: data.candidates, ai_used: data.ai_used })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'AI analysis failed')
+      setAiAnalysisResult(null)
+    } finally {
+      setAnalyzing(false)
+    }
+  }
 
   const handleCreatePlan = async () => {
     if (!scanResult) return
+    if (!aiAnalysisResult || !aiAnalysisResult.ai_used) {
+      setError('AI analysis required before creating plan. Run AI analysis first.')
+      return
+    }
     setCreatingPlan(true)
     setError(null)
     try {
-      // Create cleanup plan from scan results
-      const items = scanResult.cleanup_candidates
+      // Create cleanup plan from AI analysis results
+      const items = aiAnalysisResult.candidates
         .filter(c => c.risk !== 'DANGEROUS') // Never include DANGEROUS items
         .map(c => ({
           path: c.path,
-          action: 'DELETE',
+          action: c.action,
           risk: c.risk,
           scanner_risk: c.risk,
-          ai_risk: c.ai_risk,  // Preserve AI risk from analysis
-          effective_risk: c.effective_risk,  // Preserve effective risk from analysis
+          ai_risk: c.ai_risk,
+          effective_risk: c.ai_risk, // effective_risk will be calculated server-side as max(scanner, ai)
           reason: c.reason,
           estimated_bytes: c.size_bytes,
         }))
@@ -244,9 +279,20 @@ export function ScanWorkspace() {
             </div>
 
             <div className="flex gap-3 pt-4 border-t border-devsweep-border">
+              {/* AI Analyze button - must run before creating plan */}
+              <button
+                onClick={handleAnalyze}
+                disabled={analyzing || creatingPlan || !scanResult || scanResult.cleanup_candidates.length === 0}
+                className="px-6 py-2 bg-devsweep-warning/10 text-devsweep-warning border border-devsweep-warning/20 rounded-lg font-medium hover:bg-devsweep-warning/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {analyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Brain className="w-4 h-4" />}
+                {analyzing ? 'Analyzing with AI...' : 'Run AI Analysis'}
+              </button>
+              
+              {/* Create Cleanup Plan button - requires AI analysis first */}
               <button
                 onClick={handleCreatePlan}
-                disabled={creatingPlan || scanResult.cleanup_candidates.length === 0}
+                disabled={creatingPlan || !aiAnalysisResult || !aiAnalysisResult.ai_used}
                 className="px-6 py-2 bg-devsweep-accent text-devsweep-bg rounded-lg font-medium hover:bg-devsweep-accentHover transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {creatingPlan ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}

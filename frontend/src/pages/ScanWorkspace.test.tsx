@@ -46,6 +46,45 @@ const mockScanResult = {
   total_recoverable_human: '162.1 MB',
 }
 
+const mockAIAnalysisResult = {
+  candidates: [
+    {
+      path: 'node_modules',
+      action: 'DELETE',
+      risk: 'SAFE',
+      ai_risk: 'SAFE',
+      reason: 'Regenerable using package-lock.json',
+      size_bytes: 100000000,
+      size_human: '95.4 MB',
+    },
+    {
+      path: 'dist',
+      action: 'DELETE',
+      risk: 'SAFE',
+      ai_risk: 'SAFE',
+      reason: 'Generated build output',
+      size_bytes: 50000000,
+      size_human: '47.7 MB',
+    },
+    {
+      path: 'cache',
+      action: 'DELETE',
+      risk: 'CAUTION',
+      ai_risk: 'CAUTION',
+      reason: 'Cache files may have performance impact',
+      size_bytes: 20000000,
+      size_human: '19.1 MB',
+    },
+  ],
+  ai_used: true,
+  total_recoverable: 170000000,
+  total_recoverable_human: '162.1 MB',
+  project_type: 'node',
+  framework: 'react',
+  package_manager: 'npm',
+  language: 'typescript',
+}
+
 const mockPlanResponse = {
   plan_id: 'abc12345',
   items: [
@@ -54,6 +93,8 @@ const mockPlanResponse = {
       action: 'DELETE',
       risk: 'SAFE',
       scanner_risk: 'SAFE',
+      ai_risk: 'SAFE',
+      effective_risk: 'SAFE',
       reason: 'Regenerable using package-lock.json',
       estimated_bytes: 100000000,
     },
@@ -62,6 +103,8 @@ const mockPlanResponse = {
       action: 'DELETE',
       risk: 'SAFE',
       scanner_risk: 'SAFE',
+      ai_risk: 'SAFE',
+      effective_risk: 'SAFE',
       reason: 'Generated build output',
       estimated_bytes: 50000000,
     },
@@ -70,6 +113,8 @@ const mockPlanResponse = {
       action: 'DELETE',
       risk: 'CAUTION',
       scanner_risk: 'CAUTION',
+      ai_risk: 'CAUTION',
+      effective_risk: 'CAUTION',
       reason: 'Cache files may have performance impact',
       estimated_bytes: 20000000,
     },
@@ -128,14 +173,146 @@ describe('ScanWorkspace', () => {
     expect(screen.getByText('cache')).toBeInTheDocument()
   })
 
-  it('calls /api/cleanup/plan and navigates to /plans when Create Cleanup Plan button is clicked', async () => {
-    // First mock scan
+  it('shows Run AI Analysis button after scan', async () => {
+    ;(global.fetch as vi.Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockScanResult,
+    })
+
+    renderWithProviders(<ScanWorkspace />)
+    
+    // Perform a scan first
+    fireEvent.change(screen.getByPlaceholderText(/enter path or leave empty/i), {
+      target: { value: '/test/project' }
+    })
+    fireEvent.click(screen.getByText('Scan'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Run AI Analysis')).toBeInTheDocument()
+    })
+    
+    // Create Cleanup Plan should be disabled until AI analysis runs
+    expect(screen.getByText('Create Cleanup Plan')).toBeDisabled()
+  })
+
+  it('calls /api/ai/analyze when Run AI Analysis is clicked', async () => {
     ;(global.fetch as vi.Mock)
       .mockResolvedValueOnce({
         ok: true,
         json: async () => mockScanResult,
       })
-      // Then mock plan creation
+      // Mock AI analysis
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => mockAIAnalysisResult,
+      })
+
+    renderWithProviders(<ScanWorkspace />)
+    
+    // Perform a scan first
+    fireEvent.change(screen.getByPlaceholderText(/enter path or leave empty/i), {
+      target: { value: '/test/project' }
+    })
+    fireEvent.click(screen.getByText('Scan'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Run AI Analysis')).toBeInTheDocument()
+    })
+
+    // Click Run AI Analysis
+    fireEvent.click(screen.getByText('Run AI Analysis'))
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledTimes(2)
+      const analyzeCall = (global.fetch as vi.Mock).mock.calls[1]
+      expect(analyzeCall[0]).toBe('/api/ai/analyze')
+      const payload = JSON.parse(analyzeCall[1].body)
+      expect(payload.project_path).toBe('/test/project')
+    })
+  })
+
+  it('shows error when AI analysis fails', async () => {
+    ;(global.fetch as vi.Mock)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => mockScanResult,
+      })
+      // Mock AI analysis failure
+      .mockResolvedValueOnce({
+        ok: false,
+        json: async () => ({ detail: 'AI analysis failed: ConnectionError' }),
+      })
+
+    renderWithProviders(<ScanWorkspace />)
+    
+    // Perform a scan first
+    fireEvent.change(screen.getByPlaceholderText(/enter path or leave empty/i), {
+      target: { value: '/test/project' }
+    })
+    fireEvent.click(screen.getByText('Scan'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Run AI Analysis')).toBeInTheDocument()
+    })
+
+    // Click Run AI Analysis
+    fireEvent.click(screen.getByText('Run AI Analysis'))
+
+    await waitFor(() => {
+      expect(screen.getByText('AI analysis failed: ConnectionError')).toBeInTheDocument()
+    })
+    
+    // Create Cleanup Plan should still be disabled
+    expect(screen.getByText('Create Cleanup Plan')).toBeDisabled()
+  })
+
+  it('shows error when AI analysis succeeds but ai_used is false', async () => {
+    ;(global.fetch as vi.Mock)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => mockScanResult,
+      })
+      // Mock AI analysis with ai_used=false
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ...mockAIAnalysisResult, ai_used: false }),
+      })
+
+    renderWithProviders(<ScanWorkspace />)
+    
+    // Perform a scan first
+    fireEvent.change(screen.getByPlaceholderText(/enter path or leave empty/i), {
+      target: { value: '/test/project' }
+    })
+    fireEvent.click(screen.getByText('Scan'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Run AI Analysis')).toBeInTheDocument()
+    })
+
+    // Click Run AI Analysis
+    fireEvent.click(screen.getByText('Run AI Analysis'))
+
+    await waitFor(() => {
+      expect(screen.getByText('AI analysis unavailable: real model inference did not succeed')).toBeInTheDocument()
+    })
+    
+    // Create Cleanup Plan should still be disabled
+    expect(screen.getByText('Create Cleanup Plan')).toBeDisabled()
+  })
+
+  it('calls /api/cleanup/plan and navigates to /plans when Create Cleanup Plan is clicked after AI analysis', async () => {
+    ;(global.fetch as vi.Mock)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => mockScanResult,
+      })
+      // Mock AI analysis
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => mockAIAnalysisResult,
+      })
+      // Mock plan creation
       .mockResolvedValueOnce({
         ok: true,
         json: async () => mockPlanResponse,
@@ -150,7 +327,14 @@ describe('ScanWorkspace', () => {
     fireEvent.click(screen.getByText('Scan'))
 
     await waitFor(() => {
-      expect(screen.getByText('Create Cleanup Plan')).toBeInTheDocument()
+      expect(screen.getByText('Run AI Analysis')).toBeInTheDocument()
+    })
+
+    // Click Run AI Analysis
+    fireEvent.click(screen.getByText('Run AI Analysis'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Create Cleanup Plan')).not.toBeDisabled()
     })
 
     // Click Create Cleanup Plan
@@ -162,8 +346,8 @@ describe('ScanWorkspace', () => {
     })
 
     // Verify the plan API was called with correct payload
-    expect(global.fetch).toHaveBeenCalledTimes(2)
-    const planCall = (global.fetch as vi.Mock).mock.calls[1]
+    expect(global.fetch).toHaveBeenCalledTimes(3)
+    const planCall = (global.fetch as vi.Mock).mock.calls[2]
     expect(planCall[0]).toBe('/api/cleanup/plan')
     const payload = JSON.parse(planCall[1].body)
     expect(payload.project_path).toBe('/test/project')
@@ -171,7 +355,9 @@ describe('ScanWorkspace', () => {
     expect(payload.items[0].path).toBe('node_modules')
     expect(payload.items[0].action).toBe('DELETE')
     expect(payload.items[0].risk).toBe('SAFE')
+    expect(payload.items[0].ai_risk).toBe('SAFE')
     expect(payload.items[2].risk).toBe('CAUTION')
+    expect(payload.items[2].ai_risk).toBe('CAUTION')
   })
 
   it('shows error when plan creation fails', async () => {
@@ -179,6 +365,10 @@ describe('ScanWorkspace', () => {
       .mockResolvedValueOnce({
         ok: true,
         json: async () => mockScanResult,
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => mockAIAnalysisResult,
       })
       .mockResolvedValueOnce({
         ok: false,
@@ -194,7 +384,14 @@ describe('ScanWorkspace', () => {
     fireEvent.click(screen.getByText('Scan'))
 
     await waitFor(() => {
-      expect(screen.getByText('Create Cleanup Plan')).toBeInTheDocument()
+      expect(screen.getByText('Run AI Analysis')).toBeInTheDocument()
+    })
+
+    // Click Run AI Analysis
+    fireEvent.click(screen.getByText('Run AI Analysis'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Create Cleanup Plan')).not.toBeDisabled()
     })
 
     // Click Create Cleanup Plan
@@ -235,9 +432,9 @@ describe('ScanWorkspace', () => {
       expect(screen.getByText('No cleanup candidates found. Your workspace is clean!')).toBeInTheDocument()
     })
 
-    // Button should be disabled (or not actionable) - actually it should be disabled due to length === 0
-    const button = screen.getByText('Create Cleanup Plan')
-    expect(button).toBeDisabled()
+    // Buttons should be disabled
+    expect(screen.getByText('Run AI Analysis')).toBeDisabled()
+    expect(screen.getByText('Create Cleanup Plan')).toBeDisabled()
   })
 
   it('shows error when scan fails', async () => {

@@ -124,7 +124,11 @@ async def create_cleanup_plan(request: CleanupPlanRequest):
         if item_req.path in scanner_candidate_map:
             authoritative_scanner_risk = scanner_candidate_map[item_req.path].risk.value
         else:
-            authoritative_scanner_risk = item_req.scanner_risk if item_req.scanner_risk else item_req.risk
+            # Reject unknown paths that are not in authoritative scanner results
+            raise HTTPException(
+                status_code=400,
+                detail=f"Path '{item_req.path}' not found in authoritative scanner results. Only scanner-validated paths may be included in a cleanup plan."
+            )
 
         ai_risk = item_req.ai_risk if item_req.ai_risk else None
 
