@@ -25,6 +25,9 @@ export function CleanupPlans() {
       path: string
       action: 'DELETE' | 'KEEP'
       risk: 'SAFE' | 'CAUTION' | 'DANGEROUS'
+      scanner_risk?: 'SAFE' | 'CAUTION' | 'DANGEROUS'
+      ai_risk?: 'SAFE' | 'CAUTION' | 'DANGEROUS'
+      effective_risk?: 'SAFE' | 'CAUTION' | 'DANGEROUS'
       reason: string
       estimated_bytes: number
       regeneration_command?: string
@@ -54,6 +57,7 @@ export function CleanupPlans() {
       errors: string[]
     } | null>(null)
     const [error, setError] = useState<string | null>(null)
+  const [confirmed, setConfirmed] = useState(false)
 
   const getRiskIcon = (risk: string) => {
     switch (risk) {
@@ -64,74 +68,75 @@ export function CleanupPlans() {
   }
 
   const generatePlan = async () => {
-    if (!currentProject) return
-    setLoading(true)
-    setError(null)
-    try {
-      const res = await fetch('/api/cleanup/generate-plan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project_path: currentProject.project_path }),
-      })
-      if (!res.ok) {
-        const err = await res.json()
-        throw new Error(err.detail || 'Failed to generate plan')
-      }
-      const data = await res.json()
-      setPlan(data)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to generate plan')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const executePlan = async () => {
-      if (!plan) return
-      setExecuting(true)
+      if (!currentProject) return
+      setLoading(true)
       setError(null)
+      setConfirmed(false) // Reset confirmation when new plan generated
       try {
-        const res = await fetch('/api/cleanup/execute', {
+        const res = await fetch('/api/cleanup/generate-plan', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ plan_id: plan.plan_id, approved: true }),
+          body: JSON.stringify({ project_path: currentProject.project_path }),
         })
         if (!res.ok) {
           const err = await res.json()
-          throw new Error(err.detail || 'Execution failed')
+          throw new Error(err.detail || 'Failed to generate plan')
         }
         const data = await res.json()
-        setExecResult(data)
-        setExecuted(true)
-      
-        // Run verification after execution
-        const verifyData = await verifyProject()
-        if (verifyData) {
-          setVerifyResult(verifyData)
-        }
-      
-        // Regenerate demo data for next run
-        try {
-          await fetch('/api/demo/reset', { method: 'POST' })
-        } catch {}
-      
-        if (data.success) {
-          addCleanupToHistory({
-            plan_id: plan.plan_id,
-            items_deleted: data.items_deleted,
-            items_failed: data.items_failed,
-            bytes_freed: data.bytes_freed,
-            bytes_freed_human: data.bytes_freed_human,
-            success: data.success,
-            timestamp: new Date().toISOString(),
-          })
-        }
+        setPlan(data)
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Execution failed')
+        setError(err instanceof Error ? err.message : 'Failed to generate plan')
       } finally {
-        setExecuting(false)
+        setLoading(false)
       }
     }
+
+  const executePlan = async () => {
+        if (!plan) return
+        setExecuting(true)
+        setError(null)
+        try {
+          const res = await fetch('/api/cleanup/execute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ plan_id: plan.plan_id, approved: confirmed }),
+          })
+          if (!res.ok) {
+            const err = await res.json()
+            throw new Error(err.detail || 'Execution failed')
+          }
+          const data = await res.json()
+          setExecResult(data)
+          setExecuted(true)
+     
+          // Run verification after execution
+          const verifyData = await verifyProject()
+          if (verifyData) {
+            setVerifyResult(verifyData)
+          }
+     
+          // Regenerate demo data for next run
+          try {
+            await fetch('/api/demo/reset', { method: 'POST' })
+          } catch {}
+     
+          if (data.success) {
+            addCleanupToHistory({
+              plan_id: plan.plan_id,
+              items_deleted: data.items_deleted,
+              items_failed: data.items_failed,
+              bytes_freed: data.bytes_freed,
+              bytes_freed_human: data.bytes_freed_human,
+              success: data.success,
+              timestamp: new Date().toISOString(),
+            })
+          }
+        } catch (err) {
+          setError(err instanceof Error ? err.message : 'Execution failed')
+        } finally {
+          setExecuting(false)
+        }
+      }
 
   const verifyProject = async () => {
       if (!currentProject || !plan) return
@@ -213,46 +218,57 @@ export function CleanupPlans() {
                 <p className="text-devsweep-textSecondary text-sm mt-1">Review each item before approving</p>
               </div>
               <div className="text-right">
-                <p className="text-2xl font-bold font-mono text-devsweep-success">{formatBytes(plan.total_safe_bytes)}</p>
-                <p className="text-xs text-devsweep-textMuted">Safe Recovery</p>
-              </div>
+                              <p className="text-2xl font-bold font-mono text-devsweep-success">{formatBytes(plan.total_safe_bytes)}</p>
+                              <p className="text-xs text-devsweep-textMuted">Safe Recovery (effective)</p>
+                              <p className="text-2xl font-bold font-mono text-devsweep-warning">{formatBytes(plan.total_caution_bytes)}</p>
+                              <p className="text-xs text-devsweep-textMuted">Caution Recovery (effective)</p>
+                            </div>
             </div>
           </div>
 
           <div className="p-6 space-y-4 max-h-[500px] overflow-y-auto">
             {plan.items.map((item, i) => (
-              <div key={i} className="bg-devsweep-bg border border-devsweep-border rounded-lg p-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-3 mb-2">
-                      <span className={cn('w-6 h-6 rounded flex items-center justify-center text-xs font-medium',
-                        item.risk === 'SAFE' && 'bg-devsweep-success/20 text-devsweep-success',
-                        item.risk === 'CAUTION' && 'bg-devsweep-warning/20 text-devsweep-warning',
-                        item.risk === 'DANGEROUS' && 'bg-devsweep-danger/20 text-devsweep-danger'
-                      )}>
-                        {getRiskIcon(item.risk)}
-                      </span>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-sm truncate">{item.path}</p>
-                        <p className="text-xs text-devsweep-textMuted">{item.reason}</p>
-                      </div>
-                      <span className="font-mono text-sm text-devsweep-textSecondary whitespace-nowrap">{formatBytes(item.estimated_bytes)}</span>
-                    </div>
-                    <div className="ml-9 flex items-center gap-2">
-                      <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-devsweep-accent/10 text-devsweep-accent">
-                        {item.action}
-                      </span>
-                      {getRiskBadge(item.risk)}
-                      {item.regeneration_command && (
-                        <span className="px-2 py-0.5 text-xs font-mono bg-devsweep-bgTertiary text-devsweep-textMuted rounded">
-                          {item.regeneration_command}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
+                          <div key={i} className="bg-devsweep-bg border border-devsweep-border rounded-lg p-4">
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-3 mb-2">
+                                  {/* Use effective_risk for display */}
+                                  <span className={cn('w-6 h-6 rounded flex items-center justify-center text-xs font-medium',
+                                    (item.effective_risk || item.risk) === 'SAFE' && 'bg-devsweep-success/20 text-devsweep-success',
+                                    (item.effective_risk || item.risk) === 'CAUTION' && 'bg-devsweep-warning/20 text-devsweep-warning',
+                                    (item.effective_risk || item.risk) === 'DANGEROUS' && 'bg-devsweep-danger/20 text-devsweep-danger'
+                                  )}>
+                                    {getRiskIcon(item.effective_risk || item.risk)}
+                                  </span>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="font-medium text-sm truncate">{item.path}</p>
+                                    <p className="text-xs text-devsweep-textMuted">{item.reason}</p>
+                                  </div>
+                                  <span className="font-mono text-sm text-devsweep-textSecondary whitespace-nowrap">{formatBytes(item.estimated_bytes)}</span>
+                                </div>
+                                <div className="ml-9 flex items-center gap-2">
+                                  <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-devsweep-accent/10 text-devsweep-accent">
+                                    {item.action}
+                                  </span>
+                                  {/* Show effective risk prominently */}
+                                  {getRiskBadge(item.effective_risk || item.risk)}
+                                  {/* Show scanner and AI risk as secondary info */}
+                                  {(item.scanner_risk && item.ai_risk && item.scanner_risk !== item.ai_risk) && (
+                                    <span className="px-2 py-0.5 text-xs text-devsweep-textMuted bg-devsweep-bgTertiary rounded"
+                                          title="Scanner: {item.scanner_risk} → AI: {item.ai_risk}">
+                                      {item.scanner_risk} → {item.ai_risk}
+                                    </span>
+                                  )}
+                                  {item.regeneration_command && (
+                                    <span className="px-2 py-0.5 text-xs font-mono bg-devsweep-bgTertiary text-devsweep-textMuted rounded">
+                                      {item.regeneration_command}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
 
             {plan.warnings.length > 0 && (
               <div className="p-4 bg-devsweep-warning/10 border border-devsweep-warning/20 rounded-lg">
@@ -278,26 +294,35 @@ export function CleanupPlans() {
           </div>
 
           <div className="p-6 border-t border-devsweep-border bg-devsweep-bgTertiary/50 flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" className="w-4 h-4 rounded border-devsweep-border text-devsweep-accent focus:ring-devsweep-accent" />
-                <span className="text-sm">I understand this will delete the selected items and have reviewed the plan</span>
-              </label>
-            </div>
-            <button onClick={executePlan} disabled={executing} className="px-6 py-3 bg-devsweep-danger/10 text-devsweep-danger border border-devsweep-danger/20 rounded-lg font-medium hover:bg-devsweep-danger/20 transition-colors flex items-center gap-2 disabled:opacity-50">
-              {executing ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Executing...
-                </>
-              ) : (
-                <>
-                  <Trash2 className="w-4 h-4" />
-                  Approve & Execute Cleanup
-                </>
-              )}
-            </button>
-          </div>
+                      <div className="flex items-center gap-4">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input 
+                            type="checkbox" 
+                            className="w-4 h-4 rounded border-devsweep-border text-devsweep-accent focus:ring-devsweep-accent"
+                            checked={confirmed}
+                            onChange={(e) => setConfirmed(e.target.checked)}
+                          />
+                          <span className="text-sm">I understand this will delete the selected items and have reviewed the plan</span>
+                        </label>
+                      </div>
+                      <button 
+                        onClick={executePlan} 
+                        disabled={executing || !confirmed} 
+                        className="px-6 py-3 bg-devsweep-danger/10 text-devsweep-danger border border-devsweep-danger/20 rounded-lg font-medium hover:bg-devsweep-danger/20 transition-colors flex items-center gap-2 disabled:opacity-50"
+                      >
+                        {executing ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Executing...
+                          </>
+                        ) : (
+                          <>
+                            <Trash2 className="w-4 h-4" />
+                            Approve & Execute Cleanup
+                          </>
+                        )}
+                      </button>
+                    </div>
         </div>
       ) : (
               <div className="space-y-6 animate-in">

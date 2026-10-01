@@ -458,14 +458,35 @@ class PlanGenerator:
             )
             items.append(item)
         
-        # Calculate totals
-        safe_bytes = sum(i.estimated_bytes for i in items if i.risk == RiskLevel.SAFE and i.action == ActionType.DELETE)
-        caution_bytes = sum(i.estimated_bytes for i in items if i.risk == RiskLevel.CAUTION and i.action == ActionType.DELETE)
-        dangerous_bytes = sum(i.estimated_bytes for i in items if i.risk == RiskLevel.DANGEROUS and i.action == ActionType.DELETE)
+        # Calculate effective risk for each item and totals using effective risk
+        def get_effective_risk(item: CleanupItem) -> RiskLevel:
+            risk_order = {"SAFE": 0, "CAUTION": 1, "DANGEROUS": 2}
+            scanner_val = risk_order.get(item.risk.value, 0)
+            if item.ai_risk:
+                ai_val = risk_order.get(item.ai_risk.value, 0)
+                effective_val = max(scanner_val, ai_val)
+            else:
+                effective_val = scanner_val
+            return RiskLevel(["SAFE", "CAUTION", "DANGEROUS"][effective_val])
         
-        # Warnings
+        # Calculate totals using effective risk
+        safe_bytes = 0
+        caution_bytes = 0
+        dangerous_bytes = 0
+        
+        for item in items:
+            effective = get_effective_risk(item)
+            if item.action == ActionType.DELETE:
+                if effective == RiskLevel.SAFE:
+                    safe_bytes += item.estimated_bytes
+                elif effective == RiskLevel.CAUTION:
+                    caution_bytes += item.estimated_bytes
+                elif effective == RiskLevel.DANGEROUS:
+                    dangerous_bytes += item.estimated_bytes
+        
+        # Warnings - based on effective risk
         warnings = []
-        caution_items = [i for i in items if i.risk == RiskLevel.CAUTION and i.action == ActionType.DELETE]
+        caution_items = [i for i in items if get_effective_risk(i) == RiskLevel.CAUTION and i.action == ActionType.DELETE]
         if caution_items:
             warnings.append(f"{len(caution_items)} CAUTION items require explicit approval")
         

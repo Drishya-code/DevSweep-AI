@@ -27,6 +27,9 @@ class CleanupItemRequest(BaseModel):
     path: str
     action: str  # DELETE or KEEP
     risk: str
+    scanner_risk: Optional[str] = None  # Authoritative deterministic scanner risk
+    ai_risk: Optional[str] = None       # AI-assessed risk (can be higher)
+    effective_risk: Optional[str] = None # Max of scanner and AI risk (used for approval)
     reason: str
     estimated_bytes: int
     regeneration_command: Optional[str] = None
@@ -51,7 +54,7 @@ class CleanupPlanResponse(BaseModel):
 
 class ExecuteCleanupRequest(BaseModel):
     plan_id: str
-    approved: bool = True
+    approved: bool = False
 
 
 class ExecuteCleanupResponse(BaseModel):
@@ -201,21 +204,24 @@ async def verify_project(request: dict, project_type: str = "unknown"):
     plan_id = request.get("plan_id")
     if not project_path:
         raise HTTPException(status_code=422, detail="project_path is required")
-    
+
     path = Path(project_path).resolve()
     if not path.exists():
         raise HTTPException(status_code=404, detail="Project path not found")
-    
+
     engine = VerificationEngine(path)
-    
-    # Use pre-cleanup snapshot if plan_id provided, otherwise capture current state
-    if plan_id and plan_id in _pre_cleanup_snapshots:
+
+    # Use pre-cleanup snapshot if plan_id provided
+    if plan_id:
+        if plan_id not in _pre_cleanup_snapshots:
+            raise HTTPException(status_code=404, detail=f"Pre-cleanup snapshot not found for plan {plan_id}. Cannot verify without original snapshot.")
         engine._pre_cleanup_protected = _pre_cleanup_snapshots[plan_id]
     else:
+        # Standalone verification without plan_id - capture current state
         engine.capture_pre_cleanup_state()
-    
+
     result = engine.verify(project_type)
-    
+
     return VerificationResponse(
         passed=result.passed,
         checks=result.checks,
@@ -230,6 +236,17 @@ async def get_cleanup_plan(plan_id: str):
     if not plan:
         raise HTTPException(status_code=404, detail="Cleanup plan not found")
     
+    # Need get_effective_risk function - inline it
+    def get_effective_risk(item: CleanupItem) -> RiskLevel:
+        risk_order = {"SAFE": 0, "CAUTION": 1, "DANGEROUS": 2}
+        scanner_val = risk_order.get(item.risk.value, 0)
+        if item.ai_risk:
+            ai_val = risk_order.get(item.ai_risk.value, 0)
+            effective_val = max(scanner_val, ai_val)
+        else:
+            effective_val = scanner_val
+        return RiskLevel(["SAFE", "CAUTION", "DANGEROUS"][effective_val])
+    
     return CleanupPlanResponse(
         plan_id=plan_id,
         items=[
@@ -237,6 +254,9 @@ async def get_cleanup_plan(plan_id: str):
                 path=i.path,
                 action=i.action.value,
                 risk=i.risk.value,
+                scanner_risk=i.risk.value,
+                ai_risk=i.ai_risk.value if i.ai_risk else None,
+                effective_risk=get_effective_risk(i).value,
                 reason=i.reason,
                 estimated_bytes=i.estimated_bytes,
                 regeneration_command=i.regeneration_command,
@@ -301,6 +321,17 @@ async def generate_plan_from_scan(request: dict, default_risk_level: str = "SAFE
     }
     _pre_cleanup_snapshots[plan_id] = pre_cleanup_snapshot
     
+    # Need get_effective_risk function - inline it
+    def get_effective_risk(item: CleanupItem) -> RiskLevel:
+        risk_order = {"SAFE": 0, "CAUTION": 1, "DANGEROUS": 2}
+        scanner_val = risk_order.get(item.risk.value, 0)
+        if item.ai_risk:
+            ai_val = risk_order.get(item.ai_risk.value, 0)
+            effective_val = max(scanner_val, ai_val)
+        else:
+            effective_val = scanner_val
+        return RiskLevel(["SAFE", "CAUTION", "DANGEROUS"][effective_val])
+    
     return CleanupPlanResponse(
         plan_id=plan_id,
         items=[
@@ -308,6 +339,9 @@ async def generate_plan_from_scan(request: dict, default_risk_level: str = "SAFE
                 path=i.path,
                 action=i.action.value,
                 risk=i.risk.value,
+                scanner_risk=i.risk.value,
+                ai_risk=i.ai_risk.value if i.ai_risk else None,
+                effective_risk=get_effective_risk(i).value,
                 reason=i.reason,
                 estimated_bytes=i.estimated_bytes,
                 regeneration_command=i.regeneration_command,
