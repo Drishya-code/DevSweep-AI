@@ -89,6 +89,17 @@ def format_bytes(bytes_val: int) -> str:
     return f"{bytes_val:.1f} PB"
 
 
+def get_effective_risk(item: CleanupItem) -> RiskLevel:
+    risk_order = {"SAFE": 0, "CAUTION": 1, "DANGEROUS": 2}
+    scanner_val = risk_order.get(item.risk.value, 0)
+    if item.ai_risk:
+        ai_val = risk_order.get(item.ai_risk.value, 0)
+        effective_val = max(scanner_val, ai_val)
+    else:
+        effective_val = scanner_val
+    return RiskLevel(["SAFE", "CAUTION", "DANGEROUS"][effective_val])
+
+
 @router.post("/plan", response_model=CleanupPlanResponse)
 async def create_cleanup_plan(request: CleanupPlanRequest):
     """Create a cleanup plan from scan results."""
@@ -98,43 +109,56 @@ async def create_cleanup_plan(request: CleanupPlanRequest):
         project_path.relative_to(settings.workspace_root.resolve())
     except ValueError:
         pass  # Allow explicit paths
-    
+
     if not project_path.exists():
         raise HTTPException(status_code=404, detail="Project path not found")
-    
+
+    # Authoritative scanner validation: re-scan the project to get real scanner risks
+    analysis = analyze_project(project_path)
+    scanner_candidate_map = {c.path: c for c in analysis.cleanup_candidates}
+
     # Convert request items to engine items
     items = []
     for item_req in request.items:
+        # Re-scan authoritative risk check: client-supplied risk/scanner_risk CANNOT override real scanner
+        if item_req.path in scanner_candidate_map:
+            authoritative_scanner_risk = scanner_candidate_map[item_req.path].risk.value
+        else:
+            authoritative_scanner_risk = item_req.scanner_risk if item_req.scanner_risk else item_req.risk
+
+        ai_risk = item_req.ai_risk if item_req.ai_risk else None
+
         items.append(CleanupItem(
             path=item_req.path,
             action=ActionType(item_req.action),
-            risk=RiskLevel(item_req.risk),
+            risk=RiskLevel(authoritative_scanner_risk),
             reason=item_req.reason,
             estimated_bytes=item_req.estimated_bytes,
             regeneration_command=item_req.regeneration_command,
+            ai_risk=RiskLevel(ai_risk) if ai_risk else None,
         ))
-    
-    # Create plan
+
+    # Create plan - use effective risk for totals and approval
     plan = CleanupPlan(
         items=items,
-        total_safe_bytes=sum(i.estimated_bytes for i in items if i.risk == RiskLevel.SAFE and i.action == ActionType.DELETE),
-        total_caution_bytes=sum(i.estimated_bytes for i in items if i.risk == RiskLevel.CAUTION and i.action == ActionType.DELETE),
-        total_dangerous_bytes=sum(i.estimated_bytes for i in items if i.risk == RiskLevel.DANGEROUS and i.action == ActionType.DELETE),
-        requires_approval=any(i.risk == RiskLevel.CAUTION and i.action == ActionType.DELETE for i in items),
+        total_safe_bytes=sum(i.estimated_bytes for i in items if get_effective_risk(i) == RiskLevel.SAFE and i.action == ActionType.DELETE),
+        total_caution_bytes=sum(i.estimated_bytes for i in items if get_effective_risk(i) == RiskLevel.CAUTION and i.action == ActionType.DELETE),
+        total_dangerous_bytes=sum(i.estimated_bytes for i in items if get_effective_risk(i) == RiskLevel.DANGEROUS and i.action == ActionType.DELETE),
+        requires_approval=any(get_effective_risk(i) == RiskLevel.CAUTION and i.action == ActionType.DELETE for i in items),
         warnings=[],
         verification_steps=["Verify project still builds", "Run tests if available", "Check git status"],
     )
-    
-    # Add warnings for CAUTION items
-    caution_items = [i for i in items if i.risk == RiskLevel.CAUTION and i.action == ActionType.DELETE]
+
+    # Add warnings for CAUTION items (based on effective risk)
+    caution_items = [i for i in items if get_effective_risk(i) == RiskLevel.CAUTION and i.action == ActionType.DELETE]
     if caution_items:
         plan.warnings.append(f"{len(caution_items)} CAUTION items require explicit approval")
-    
+
     # Capture pre-cleanup protected file state
     pre_cleanup_engine = VerificationEngine(project_path)
     pre_cleanup_engine.capture_pre_cleanup_state()
     pre_cleanup_snapshot = pre_cleanup_engine._pre_cleanup_protected
-    
+
     # Generate plan ID and store
     import uuid
     plan_id = str(uuid.uuid4())[:8]
@@ -143,10 +167,23 @@ async def create_cleanup_plan(request: CleanupPlanRequest):
         "project_path": str(project_path),
     }
     _pre_cleanup_snapshots[plan_id] = pre_cleanup_snapshot
-    
+
     return CleanupPlanResponse(
         plan_id=plan_id,
-        items=request.items,
+        items=[
+            CleanupItemRequest(
+                path=i.path,
+                action=i.action.value,
+                risk=i.risk.value,
+                scanner_risk=i.risk.value,
+                ai_risk=i.ai_risk.value if i.ai_risk else None,
+                effective_risk=get_effective_risk(i).value,
+                reason=i.reason,
+                estimated_bytes=i.estimated_bytes,
+                regeneration_command=i.regeneration_command,
+            )
+            for i in items
+        ],
         total_safe_bytes=plan.total_safe_bytes,
         total_caution_bytes=plan.total_caution_bytes,
         total_dangerous_bytes=plan.total_dangerous_bytes,
@@ -162,13 +199,13 @@ async def execute_cleanup(request: ExecuteCleanupRequest):
     plan_data = _cleanup_plans.get(request.plan_id)
     if not plan_data:
         raise HTTPException(status_code=404, detail="Cleanup plan not found")
-    
+
     plan = plan_data["plan"]
     project_path = Path(plan_data["project_path"])
-    
+
     # Get the pre-cleanup snapshot for verification
     pre_cleanup_snapshot = _pre_cleanup_snapshots.get(request.plan_id, {})
-    
+
     # Get fresh scanner candidates for allowlist validation
     analysis = analyze_project(project_path)
     scanner_candidates = [
@@ -180,11 +217,11 @@ async def execute_cleanup(request: ExecuteCleanupRequest):
         }
         for c in analysis.cleanup_candidates
     ]
-    
+
     engine = CleanupEngine(project_path)
     engine.set_scanner_candidates(scanner_candidates)
     result = engine.execute_plan(plan, approved=request.approved)
-    
+
     return ExecuteCleanupResponse(
         success=result.success,
         items_processed=result.items_processed,
@@ -235,18 +272,7 @@ async def get_cleanup_plan(plan_id: str):
     plan = _cleanup_plans.get(plan_id)
     if not plan:
         raise HTTPException(status_code=404, detail="Cleanup plan not found")
-    
-    # Need get_effective_risk function - inline it
-    def get_effective_risk(item: CleanupItem) -> RiskLevel:
-        risk_order = {"SAFE": 0, "CAUTION": 1, "DANGEROUS": 2}
-        scanner_val = risk_order.get(item.risk.value, 0)
-        if item.ai_risk:
-            ai_val = risk_order.get(item.ai_risk.value, 0)
-            effective_val = max(scanner_val, ai_val)
-        else:
-            effective_val = scanner_val
-        return RiskLevel(["SAFE", "CAUTION", "DANGEROUS"][effective_val])
-    
+
     return CleanupPlanResponse(
         plan_id=plan_id,
         items=[
@@ -278,20 +304,20 @@ async def generate_plan_from_scan(request: dict, default_risk_level: str = "SAFE
     project_path = request.get("project_path")
     if not project_path:
         raise HTTPException(status_code=422, detail="project_path is required")
-    
+
     # Analyze project with AI
     from ai.routes import ai_analyze
     from ai.routes import AnalyzeRequest
-    
+
     # Run the AI analysis
     analyze_request = AnalyzeRequest(project_path=project_path)
     analysis = await ai_analyze(analyze_request)
-    
+
     # Generate plan from AI-analyzed candidates
     path = Path(project_path).resolve()
     if not path.exists():
         raise HTTPException(status_code=404, detail="Project path not found")
-    
+
     generator = PlanGenerator(path)
     plan = generator.generate_plan(
         [
@@ -306,12 +332,12 @@ async def generate_plan_from_scan(request: dict, default_risk_level: str = "SAFE
         ],
         default_risk_level=RiskLevel(default_risk_level),
     )
-    
+
     # Capture pre-cleanup protected file state
     pre_cleanup_engine = VerificationEngine(path)
     pre_cleanup_engine.capture_pre_cleanup_state()
     pre_cleanup_snapshot = pre_cleanup_engine._pre_cleanup_protected
-    
+
     # Store plan
     import uuid
     plan_id = str(uuid.uuid4())[:8]
@@ -320,18 +346,7 @@ async def generate_plan_from_scan(request: dict, default_risk_level: str = "SAFE
         "project_path": str(path),
     }
     _pre_cleanup_snapshots[plan_id] = pre_cleanup_snapshot
-    
-    # Need get_effective_risk function - inline it
-    def get_effective_risk(item: CleanupItem) -> RiskLevel:
-        risk_order = {"SAFE": 0, "CAUTION": 1, "DANGEROUS": 2}
-        scanner_val = risk_order.get(item.risk.value, 0)
-        if item.ai_risk:
-            ai_val = risk_order.get(item.ai_risk.value, 0)
-            effective_val = max(scanner_val, ai_val)
-        else:
-            effective_val = scanner_val
-        return RiskLevel(["SAFE", "CAUTION", "DANGEROUS"][effective_val])
-    
+
     return CleanupPlanResponse(
         plan_id=plan_id,
         items=[

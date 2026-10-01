@@ -36,6 +36,8 @@ export function ScanWorkspace() {
           action: 'DELETE',
           risk: c.risk,
           scanner_risk: c.risk,
+          ai_risk: c.ai_risk,  // Preserve AI risk from analysis
+          effective_risk: c.effective_risk,  // Preserve effective risk from analysis
           reason: c.reason,
           estimated_bytes: c.size_bytes,
         }))
