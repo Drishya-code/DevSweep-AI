@@ -1,237 +1,163 @@
-import { cn, formatBytes, formatDuration } from '../utils/helpers'
+import { useCallback, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { AlertTriangle, History, RotateCcw } from 'lucide-react'
 import { useDevSweep } from '../context/DevSweepContext'
-import {
-  RotateCcw,
-  Package,
-  Hammer,
-  GitBranch,
-  Play,
-  CheckCircle,
-  AlertCircle,
-  XCircle,
-  Loader2,
-  Terminal,
-  Download,
-  Copy,
-  Clock,
-  AlertTriangle,
-} from 'lucide-react'
-import { useState } from 'react'
+import { useViewMode } from '../context/ViewModeContext'
+import { Button } from '../components/ui/Button'
+import { Card, CardDescription, CardHeader, CardTitle } from '../components/ui/Card'
+import { EmptyState } from '../components/ui/EmptyState'
+import { ErrorAlert } from '../components/ui/ErrorAlert'
+import { LoadingState } from '../components/ui/LoadingState'
+import { apiErrorMessage, requestJson } from '../utils/api'
+import { formatBytes } from '../utils/helpers'
+
+type Backup = {
+  backup_id: string; execution_id: string; project_id: string; path: string
+  size_bytes: number; sha256: string; entry_count: number; created_at: string; status: string
+}
+type BackupEntry = { path: string; type: 'file' | 'directory'; size: number; sha256?: string }
+type BackupDetails = {
+  backup_id: string; path: string; size_bytes: number; sha256: string; entry_count: number
+  offset: number; limit: number; entries: BackupEntry[]; has_more: boolean
+}
+type RestoreRecord = {
+  restore_id: string; backup_id: string; project_id: string; status: string
+  started_at: string; finished_at: string | null; summary: string
+}
 
 export function RestoreCenter() {
   const { currentProject } = useDevSweep()
-  const [selectedOption, setSelectedOption] = useState<string | null>(null)
-  const [executing, setExecuting] = useState<string | null>(null)
-  const [output, setOutput] = useState<string>('')
+  const { viewMode } = useViewMode()
+  const navigate = useNavigate()
+  const [backups, setBackups] = useState<Backup[]>([])
+  const [restores, setRestores] = useState<RestoreRecord[]>([])
+  const [loading, setLoading] = useState(true)
+  const [restoring, setRestoring] = useState<string | null>(null)
+  const [inspecting, setInspecting] = useState<string | null>(null)
+  const [details, setDetails] = useState<BackupDetails | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
-  // Mock restore options based on current project
-  const restoreOptions = currentProject ? [
-    {
-      name: 'Restore Dependencies',
-      description: 'Reinstall all project dependencies from lock files',
-      commands: currentProject.project_type === 'node' 
-        ? ['npm install'] 
-        : currentProject.project_type === 'python'
-        ? ['python -m venv .venv', 'source .venv/bin/activate', 'pip install -r requirements.txt']
-        : ['make install'],
-      estimated_time_seconds: 120,
-      risk: 'SAFE' as 'SAFE' | 'CAUTION' | 'DANGEROUS',
-      icon: Package,
-    },
-    {
-      name: 'Restore Build',
-      description: 'Rebuild the project from source',
-      commands: currentProject.project_type === 'node'
-        ? ['npm run build']
-        : currentProject.project_type === 'python'
-        ? ['python -m pytest', 'python setup.py build']
-        : ['make build'],
-      estimated_time_seconds: 60,
-      risk: 'SAFE' as 'SAFE' | 'CAUTION' | 'DANGEROUS',
-      icon: Hammer,
-    },
-    {
-      name: 'Full Project Setup',
-      description: 'Complete environment reconstruction from Git',
-      commands: [
-        'git clone <repository-url>',
-        'cd <project>',
-        currentProject.project_type === 'node' ? 'npm install' : 'python -m venv .venv && pip install -r requirements.txt',
-        currentProject.project_type === 'node' ? 'npm run build' : 'python setup.py build',
-      ],
-      estimated_time_seconds: 300,
-      risk: 'SAFE' as 'SAFE' | 'CAUTION' | 'DANGEROUS',
-      icon: GitBranch,
-    },
-  ] : []
-
-  const handleExecute = async (option: typeof restoreOptions[0]) => {
-    setSelectedOption(option.name)
-    setExecuting(option.name)
-    setOutput(`$ ${option.commands.join(' && ')}\n\n[PREVIEW: Simulated execution - backend restore not yet implemented]\n\n`)
-    
-    // Simulate execution
-    for (const cmd of option.commands) {
-      await new Promise(r => setTimeout(r, 500))
-      setOutput(prev => prev + `$ ${cmd}\n[Running...]\n`)
-      await new Promise(r => setTimeout(r, 1000))
-      setOutput(prev => prev + `[Completed - Preview only]\n`)
+  const load = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const [backupData, historyData] = await Promise.all([
+        requestJson<{ backups: Backup[] }>('/api/cleanup/backups'),
+        requestJson<{ restores: RestoreRecord[] }>('/api/cleanup/restore/history'),
+      ])
+      setBackups(backupData.backups)
+      setRestores(historyData.restores)
+    } catch (err) {
+      setError(apiErrorMessage(err, viewMode))
+    } finally {
+      setLoading(false)
     }
-    
-    setExecuting(null)
-    setOutput(prev => prev + '\n⚠️ Preview complete - No actual changes made. Restore engine not yet implemented.\n')
+  }, [viewMode])
+
+  useEffect(() => { void load() }, [load])
+
+  const restore = async (backup: Backup) => {
+    if (!currentProject || currentProject.project_id !== backup.project_id || restoring || details?.backup_id !== backup.backup_id) return
+    const confirmed = window.confirm(`Restore “${backup.path}” (${details.entry_count} entries, ${formatBytes(backup.size_bytes)}) from its verified backup? Existing files will never be overwritten.`)
+    if (!confirmed) return
+    setRestoring(backup.backup_id)
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await requestJson<{ status: string; summary: string }>('/api/cleanup/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ backup_id: backup.backup_id, project_path: currentProject.project_path, access_grant_id: currentProject.access_grant_id, approved: true }),
+      })
+      setNotice(result.summary)
+      await load()
+    } catch (err) {
+      setError(apiErrorMessage(err, viewMode))
+      await load()
+    } finally {
+      setRestoring(null)
+    }
   }
 
-  const getRiskBadge = (risk: string) => (
-    <span className={cn('px-2 py-0.5 text-xs font-medium rounded-full', 
-      risk === 'SAFE' && 'bg-devsweep-success/10 text-devsweep-success border border-devsweep-success/20',
-      risk === 'CAUTION' && 'bg-devsweep-warning/10 text-devsweep-warning border border-devsweep-warning/20',
-      risk === 'DANGEROUS' && 'bg-devsweep-danger/10 text-devsweep-danger border border-devsweep-danger/20'
-    )}>
-      {risk}
-    </span>
-  )
+  const inspect = async (backupId: string, offset = 0) => {
+    setInspecting(backupId)
+    setError(null)
+    try {
+      const page = await requestJson<BackupDetails>(`/api/cleanup/backups/${encodeURIComponent(backupId)}?offset=${offset}&limit=100`)
+      setDetails(previous => offset > 0 && previous?.backup_id === backupId
+        ? { ...page, entries: [...previous.entries, ...page.entries] }
+        : page)
+    } catch (err) {
+      setDetails(null)
+      setError(apiErrorMessage(err, viewMode))
+    } finally {
+      setInspecting(null)
+    }
+  }
+
+  const visibleBackups = currentProject?.project_id
+    ? backups.filter(backup => backup.project_id === currentProject.project_id)
+    : backups
 
   return (
     <div className="space-y-6 animate-in max-w-4xl">
       <div>
-        <h1 className="text-2xl font-bold">Restore Center <span className="text-xs bg-devsweep-warning/10 text-devsweep-warning px-2 py-0.5 rounded ml-2">Preview</span></h1>
-        <p className="text-devsweep-textSecondary mt-1">Reconstruct cleaned environments and restore project state (Preview: restore execution not yet implemented)</p>
+        <h1 className="text-2xl font-bold">Restore Center</h1>
+        <p className="mt-1 text-devsweep-textSecondary">Restore verified contents saved before cleanup. Files are never overwritten, and backups are not automatically removed.</p>
       </div>
-
-      {!currentProject ? (
-        <div className="bg-devsweep-bgSecondary border border-devsweep-border rounded-xl p-12 text-center">
-          <RotateCcw className="w-16 h-16 mx-auto mb-4 text-devsweep-textMuted opacity-50" />
-          <AlertTriangle className="w-8 h-8 mx-auto mb-4 text-devsweep-warning/50" />
-          <h3 className="text-lg font-medium mb-2">No project selected</h3>
-          <p className="text-devsweep-textMuted mb-6">Scan a workspace first to see restore options</p>
-        </div>
+      {error && <ErrorAlert title="Recovery data unavailable" message={error} action={{ label: 'Retry', onClick: () => void load() }} />}
+      {notice && <div role="status" className="rounded-lg border border-devsweep-success/30 bg-devsweep-success/10 p-4 text-sm text-devsweep-success">{notice}</div>}
+      {currentProject ? (
+        <Card>
+          <CardHeader><CardTitle as="h2">Selected project</CardTitle><CardDescription className="break-all font-mono">{currentProject.project_path}</CardDescription></CardHeader>
+        </Card>
       ) : (
-        <div className="space-y-6">
-          <div className="bg-devsweep-bgSecondary border border-devsweep-border rounded-xl p-6">
-            <h2 className="text-lg font-semibold mb-4">Project: {currentProject.project_path.split('/').pop()}</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
-              <div className="flex items-center gap-2 text-devsweep-textSecondary">
-                <GitBranch className="w-4 h-4" />
-                <span>Type: <span className="font-mono text-devsweep-text">{currentProject.project_type}</span></span>
-              </div>
-              <div className="flex items-center gap-2 text-devsweep-textSecondary">
-                <Package className="w-4 h-4" />
-                <span>Framework: <span className="font-mono text-devsweep-text">{currentProject.framework}</span></span>
-              </div>
-              <div className="flex items-center gap-2 text-devsweep-textSecondary">
-                <Terminal className="w-4 h-4" />
-                <span>Package Manager: <span className="font-mono text-devsweep-text">{currentProject.package_manager}</span></span>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-devsweep-bgSecondary border border-devsweep-border rounded-xl overflow-hidden">
-            <div className="p-6 border-b border-devsweep-border bg-devsweep-bgTertiary/50">
-              <h2 className="text-lg font-semibold">Available Restore Options</h2>
-              <p className="text-devsweep-textSecondary text-sm mt-1">Choose how to restore your project (Preview only)</p>
-            </div>
-
-            <div className="p-6 space-y-4">
-              {restoreOptions.map((option, i) => {
-                const Icon = option.icon
-                const isSelected = selectedOption === option.name
-                return (
-                  <div
-                    key={i}
-                    className={cn('p-4 rounded-lg border transition-colors relative', 
-                      isSelected 
-                        ? 'border-devsweep-accent bg-devsweep-accent/5' 
-                        : 'border-devsweep-border hover:border-devsweep-accent/50'
-                    )}
-                  >
-                    <div className="flex items-start gap-4">
-                      <div className={cn('w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0', 
-                        option.risk === 'SAFE' && 'bg-devsweep-success/10 text-devsweep-success',
-                        option.risk === 'CAUTION' && 'bg-devsweep-warning/10 text-devsweep-warning',
-                        option.risk === 'DANGEROUS' && 'bg-devsweep-danger/10 text-devsweep-danger'
-                      )}>
-                        <Icon className="w-5 h-5" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-3">
-                          <h3 className="font-medium">{option.name}</h3>
-                          {getRiskBadge(option.risk)}
-                        </div>
-                        <p className="text-devsweep-textSecondary text-sm mt-1">{option.description}</p>
-                        <div className="flex items-center gap-4 mt-2 text-xs text-devsweep-textMuted">
-                          <span className="flex items-center gap-1">
-                            <Clock className="w-3 h-3" />
-                            ~{formatDuration(option.estimated_time_seconds)}
-                          </span>
-                          <span className="flex items-center gap-1">
-                            <Terminal className="w-3 h-3" />
-                            {option.commands.length} command(s)
-                          </span>
-                        </div>
-                        <div className="mt-2 flex flex-wrap gap-1">
-                          {option.commands.map((cmd, ci) => (
-                            <span key={ci} className="px-2 py-0.5 text-xs bg-devsweep-bgTertiary text-devsweep-textMuted rounded font-mono">{cmd}</span>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {executing === option.name ? (
-                          <button className="px-4 py-2 bg-devsweep-bg border border-devsweep-border rounded-lg font-medium text-devsweep-textMuted flex items-center gap-2 disabled:opacity-50" disabled>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            Running...
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => handleExecute(option)}
-                            className="px-4 py-2 bg-devsweep-accent text-devsweep-bg rounded-lg font-medium hover:bg-devsweep-accentHover transition-colors flex items-center gap-2"
-                          >
-                            <Play className="w-4 h-4" />
-                            Execute Preview
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-
-          {output && (
-            <div className="bg-devsweep-bg border border-devsweep-border rounded-xl overflow-hidden">
-              <div className="p-4 border-b border-devsweep-border bg-devsweep-bgTertiary/50 flex items-center justify-between">
-                <h3 className="font-medium">Execution Output (Preview)</h3>
-                <div className="flex items-center gap-2">
-                  <button className="p-2 hover:bg-devsweep-bgTertiary rounded-lg transition-colors" onClick={() => navigator.clipboard.writeText(output)}>
-                    <Copy className="w-4 h-4 text-devsweep-textMuted" />
-                  </button>
-                  <button className="p-2 hover:bg-devsweep-bgTertiary rounded-lg transition-colors">
-                    <Download className="w-4 h-4 text-devsweep-textMuted" />
-                  </button>
+        <div className="rounded-lg border border-devsweep-warning/30 bg-devsweep-warning/10 p-4 text-sm text-devsweep-textSecondary"><AlertTriangle className="mr-2 inline h-4 w-4 text-devsweep-warning" />Select and refresh a project before restoring. Backups remain listed for review.</div>
+      )}
+      {loading ? <Card role="status"><LoadingState text="Loading verified backups…" /></Card> : error ? null : visibleBackups.length === 0 ? (
+        <Card><EmptyState icon={<RotateCcw className="h-12 w-12 text-devsweep-textMuted" />} title="No verified backups available" description="A backup appears here only after its cleanup item was recorded deleted and its saved content passed integrity checks." /></Card>
+      ) : (
+        <section aria-labelledby="backup-heading" className="space-y-3">
+          <h2 id="backup-heading" className="text-lg font-semibold">Verified backups</h2>
+          {visibleBackups.map(backup => {
+            const canRestore = Boolean(currentProject && currentProject.project_id === backup.project_id)
+            return <Card key={backup.backup_id}>
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className="break-all font-mono text-sm">{backup.path}</p>
+                  <p className="mt-1 text-sm text-devsweep-textSecondary">{formatBytes(backup.size_bytes)} · saved {new Date(backup.created_at).toLocaleString()}</p>
+                  <p className="mt-1 text-xs text-devsweep-textMuted">Cleanup execution {backup.execution_id}</p>
+                  {viewMode === 'technical' && <p className="mt-1 break-all font-mono text-xs text-devsweep-textMuted">Backup {backup.backup_id} · SHA-256 {backup.sha256}</p>}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="secondary" onClick={() => void inspect(backup.backup_id)} disabled={Boolean(inspecting) || Boolean(restoring)} loading={inspecting === backup.backup_id}>Review contents</Button>
+                  <Button onClick={() => canRestore ? void restore(backup) : navigate('/projects')} disabled={Boolean(restoring) || details?.backup_id !== backup.backup_id} loading={restoring === backup.backup_id} aria-label={canRestore ? `Restore ${backup.path}` : 'Select matching project'}>
+                    {canRestore ? 'Restore' : 'Select project'}
+                  </Button>
                 </div>
               </div>
-              <pre className="p-4 font-mono text-sm text-devsweep-textSecondary overflow-x-auto max-h-96">{output}</pre>
-            </div>
-          )}
-
-          <div className="bg-devsweep-bgSecondary border border-devsweep-border rounded-xl p-6">
-            <h3 className="font-medium mb-4 flex items-center gap-2">
-              <AlertCircle className="w-5 h-5 text-devsweep-warning" />
-              <AlertTriangle className="w-5 h-5 text-devsweep-warning" />
-              Prerequisites & Limitations
-            </h3>
-            <ul className="list-disc list-inside text-devsweep-textSecondary space-y-2">
-              <li>Git installed and configured</li>
-              <li>{currentProject.project_type === 'node' ? 'Node.js 18+ and npm' : 'Python 3.10+ and pip'}</li>
-              <li>Access to package registries (npm, PyPI, etc.)</li>
-              <li>Network connectivity for dependency downloads</li>
-              <li>Sufficient disk space for reconstruction</li>
-              <li><strong>Limitation:</strong> Restore execution is a preview - no actual commands are run. Backend restore engine not yet implemented.</li>
-            </ul>
-          </div>
-        </div>
+              {details?.backup_id === backup.backup_id && <div className="mt-4 border-t border-devsweep-border pt-3">
+                <p className="mb-2 text-sm font-medium">Backup contents ({details.entry_count} entries; the full backup passed SHA-256 verification)</p>
+                <ul className="max-h-64 space-y-1 overflow-auto rounded-lg bg-devsweep-bgTertiary/40 p-3 text-xs">
+                  {details.entries.map((entry, index) => <li key={`${entry.path}-${index}`} className="flex flex-wrap justify-between gap-x-4 gap-y-1"><span className="break-all font-mono">{entry.path === '.' ? '(item root)' : entry.path}{entry.type === 'directory' ? '/' : ''}</span><span className="shrink-0 text-devsweep-textMuted">{entry.type}{entry.type === 'file' ? ` · ${formatBytes(entry.size)}` : ''}{viewMode === 'technical' && entry.sha256 ? ` · SHA-256 ${entry.sha256}` : ''}</span></li>)}
+                </ul>
+                {details.has_more && <Button className="mt-2" variant="ghost" size="sm" onClick={() => void inspect(backup.backup_id, details.entries.length)} loading={inspecting === backup.backup_id}>Show more contents</Button>}
+              </div>}
+            </Card>
+          })}
+        </section>
       )}
+      <section aria-labelledby="restore-history-heading" className="space-y-3">
+        <h2 id="restore-history-heading" className="flex items-center gap-2 text-lg font-semibold"><History className="h-5 w-5" />Restore history</h2>
+        {!loading && !error && restores.length === 0 ? <Card><EmptyState title="No restore attempts recorded" description="Approved restore requests and their outcomes will appear here." /></Card> : restores.map(record => (
+          <Card key={record.restore_id} padding="sm">
+            <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-medium capitalize">{record.status}</span><time className="text-xs text-devsweep-textMuted">{new Date(record.started_at).toLocaleString()}</time></div>
+            <p className="mt-1 text-sm text-devsweep-textSecondary">{record.summary}</p>
+            {viewMode === 'technical' && <p className="mt-1 break-all font-mono text-xs text-devsweep-textMuted">Restore {record.restore_id} · Backup {record.backup_id}</p>}
+          </Card>
+        ))}
+      </section>
     </div>
   )
 }

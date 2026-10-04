@@ -41,7 +41,10 @@ import {
 type ScanStep = 'scan' | 'review' | 'confirm';
 
 interface ScanResult {
+  scan_id?: string | null;
+  project_id?: string | null;
   project_path: string;
+  access_grant_id?: string | null;
   project_type: string;
   framework: string;
   package_manager: string;
@@ -159,7 +162,10 @@ export function ScanWorkspace() {
       const data = await requestJson<AIAnalysisResult>('/api/ai/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project_path: scanResult.project_path }),
+        body: JSON.stringify({
+          project_path: scanResult.project_path,
+          access_grant_id: scanResult.access_grant_id,
+        }),
       });
       setAiAnalysisResult({
         candidates: data.candidates,
@@ -212,6 +218,7 @@ export function ScanWorkspace() {
         body: JSON.stringify({
           project_path: scanResult.project_path,
           analysis_id: aiAnalysisResult.analysis_id,
+          scan_id: scanResult.scan_id,
           items: selectedItems,
         }),
       });

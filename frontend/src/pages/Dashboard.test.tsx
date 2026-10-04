@@ -64,8 +64,9 @@ describe('Dashboard', () => {
     const addScanToHistory = vi.fn()
     const setIsScanning = vi.fn()
     setMockContext({ currentProject: null, scanHistory: [], isScanning: false, demoMode: false, setCurrentProject, addScanToHistory, setIsScanning })
-    ;(global.fetch as vi.Mock).mockReturnValueOnce(new Promise(resolve => { resolveScan = resolve }))
     render(<MemoryRouter><Dashboard /></MemoryRouter>)
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith('/api/cleanup/history/summary', undefined))
+    ;(global.fetch as vi.Mock).mockReturnValueOnce(new Promise(resolve => { resolveScan = resolve }))
     fireEvent.click(screen.getByRole('button', { name: 'Scan Workspace' }))
     expect(setIsScanning).toHaveBeenCalledWith(true)
     await act(async () => { resolveScan({ ok: true, json: async () => project }) })
@@ -82,8 +83,9 @@ describe('Dashboard', () => {
   })
 
   it('reports scan API failures without losing the current view', async () => {
-    ;(global.fetch as vi.Mock).mockResolvedValueOnce({ ok: false, json: async () => ({ detail: 'Workspace unavailable' }) })
     renderPage({ currentProject: project })
+    await waitFor(() => expect(global.fetch).toHaveBeenCalledWith('/api/cleanup/history/summary', undefined))
+    ;(global.fetch as vi.Mock).mockResolvedValueOnce({ ok: false, json: async () => ({ detail: 'Workspace unavailable' }) })
     fireEvent.click(screen.getByRole('button', { name: 'Scan Workspace' }))
     expect(await screen.findByText('Workspace unavailable')).toBeInTheDocument()
   })

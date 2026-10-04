@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable
 from enum import Enum
 import time
 import json
@@ -72,10 +72,25 @@ class CleanupEngine:
         self.git_tools = GitTools(workspace_root)
         # Cache scanner results for allowlist validation
         self._scanner_candidates: List[Dict[str, Any]] = []
+        self._authorization_guard: Optional[Callable[[], Any]] = None
+        self._execution_recorder: Optional[Callable[[str, str, str, int], Any]] = None
+        self._pre_delete_guard: Optional[Callable[[Path, CleanupItem], Any]] = None
   
     def set_scanner_candidates(self, candidates: List[Dict[str, Any]]):
         """Set the allowed cleanup candidates from scanner for validation."""
         self._scanner_candidates = candidates
+
+    def set_authorization_guard(self, guard: Callable[[], Any]):
+        """Revalidate route-level project authorization immediately before deletes."""
+        self._authorization_guard = guard
+
+    def set_execution_recorder(self, recorder: Callable[[str, str, str, int], Any]):
+        """Persist per-item attempt/completion events without deciding eligibility."""
+        self._execution_recorder = recorder
+
+    def set_pre_delete_guard(self, guard: Callable[[Path, CleanupItem], Any]):
+        """Run a fail-closed backup/integrity step immediately before deletion."""
+        self._pre_delete_guard = guard
   
     def _is_allowed_candidate(self, path: str, action: ActionType, risk: RiskLevel) -> bool:
         """Check if a path is in the scanner's allowlist and valid for deletion.
@@ -200,6 +215,16 @@ class CleanupEngine:
     def execute_plan(self, plan: CleanupPlan, approved: bool = False) -> CleanupResult:
         """Execute a validated cleanup plan."""
         start_time = time.time()
+
+        if self._authorization_guard:
+            try:
+                self._authorization_guard()
+            except Exception as e:
+                return CleanupResult(
+                    success=False,
+                    errors=[f"Project authorization failed: {type(e).__name__}"],
+                    duration_seconds=time.time() - start_time,
+                )
         
         # Validate first
         validation = self.validate_plan(plan)
@@ -240,13 +265,33 @@ class CleanupEngine:
         items_deleted = 0
         items_failed = 0
         errors = []
+        delete_items = [item for item in plan.items if item.action == ActionType.DELETE]
         
-        for item in plan.items:
-            if item.action != ActionType.DELETE:
-                continue
+        for item_index, item in enumerate(delete_items):
+            if self._authorization_guard:
+                try:
+                    self._authorization_guard()
+                except Exception as e:
+                    remaining = len(delete_items) - item_index
+                    items_failed += remaining
+                    errors.append(f"Project authorization failed before deleting remaining items: {type(e).__name__}")
+                    break
             
             item_path = self.workspace_root / item.path
+            if self._execution_recorder:
+                self._execution_recorder("attempt", item.path, "", 0)
+            if self._pre_delete_guard:
+                try:
+                    self._pre_delete_guard(item_path, item)
+                except Exception as e:
+                    if self._execution_recorder:
+                        self._execution_recorder("failed", item.path, f"Backup failed; original was not deleted: {type(e).__name__}: {e}", 0)
+                    items_failed += 1
+                    errors.append(f"{item.path}: backup failed; original was not deleted: {e}")
+                    continue
             result = self.fs_tools.delete_path(item_path)
+            if self._execution_recorder:
+                self._execution_recorder("completed" if result.success else "failed", item.path, result.error or "", result.bytes_freed)
             
             if result.success:
                 # Use actual filesystem bytes freed from the deletion result
@@ -258,7 +303,7 @@ class CleanupEngine:
         
         return CleanupResult(
             success=items_failed == 0,
-            items_processed=len([i for i in plan.items if i.action == ActionType.DELETE]),
+            items_processed=len(delete_items),
             items_deleted=items_deleted,
             items_failed=items_failed,
             bytes_freed=bytes_freed,

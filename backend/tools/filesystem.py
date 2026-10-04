@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import stat
 from pathlib import Path
 from typing import List, Optional
 from dataclasses import dataclass
@@ -235,9 +236,30 @@ class FilesystemTools:
     
     def delete_path(self, path: Path) -> DeleteResult:
         """Safely delete a path with protection checks."""
+        # Do not resolve a candidate symlink/junction to its target and then
+        # delete that target. Scanner candidates are relative to the project;
+        # each component must remain a real directory/file at execution time.
+        raw_path = Path(path)
+        try:
+            lexical = raw_path.absolute().relative_to(self.workspace_root)
+        except ValueError:
+            return DeleteResult(success=False, path=str(raw_path), error="Path outside workspace root")
+        if any(part in {".", ".."} for part in lexical.parts):
+            return DeleteResult(success=False, path=str(raw_path), error="Path traversal is not allowed")
+        cursor = self.workspace_root
+        try:
+            for part in lexical.parts:
+                cursor = cursor / part
+                component = cursor.lstat()
+                is_reparse = bool(getattr(component, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+                if stat.S_ISLNK(component.st_mode) or is_reparse:
+                    return DeleteResult(success=False, path=str(raw_path), error="Symlinks and reparse points cannot be deleted as cleanup candidates")
+        except OSError:
+            return DeleteResult(success=False, path=str(raw_path), error="Path does not exist or cannot be inspected")
+
         # Resolve path
         try:
-            path = path.resolve()
+            path = raw_path.resolve(strict=True)
         except Exception as e:
             return DeleteResult(success=False, path=str(path), error=f"Path resolution failed: {e}")
         

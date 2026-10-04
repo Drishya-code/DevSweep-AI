@@ -14,6 +14,7 @@ from ai.prompts import DEVSWEEP_SYSTEM_PROMPT
 from scanner.detector import analyze_project, RiskLevel
 from config import settings
 from pathlib import Path
+from security.workspace_access import ProjectAuthorization, ProjectAccessError, authorize_project_path
 
 
 router = APIRouter(tags=["ai"])
@@ -28,6 +29,7 @@ class ChatRequest(BaseModel):
     message: str
     history: List[ChatMessage] = []
     project_path: Optional[str] = None
+    access_grant_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -37,6 +39,7 @@ class ChatResponse(BaseModel):
 
 class AnalyzeRequest(BaseModel):
     project_path: str
+    access_grant_id: Optional[str] = None
 
 
 class AnalyzeResponse(BaseModel):
@@ -60,14 +63,35 @@ _verified_analyses: Dict[str, Dict[str, Any]] = {}
 VERIFIED_ANALYSIS_TTL_SECONDS = 15 * 60
 
 
-def take_verified_analysis(analysis_id: str, project_path: Path) -> Optional[Dict[str, Any]]:
+def take_verified_analysis(
+    analysis_id: str,
+    project_path: Path | ProjectAuthorization,
+) -> Optional[Dict[str, Any]]:
     result = _verified_analyses.pop(analysis_id, None)
-    if (
-        not result
-        or result.get("expires_at", 0) <= time.monotonic()
-        or Path(result["project_path"]).resolve() != project_path.resolve()
-    ):
+    if not result or result.get("expires_at", 0) <= time.monotonic():
         return None
+    saved_authorization: ProjectAuthorization = result["authorization"]
+    try:
+        saved_authorization.revalidate()
+    except ProjectAccessError:
+        return None
+    if isinstance(project_path, ProjectAuthorization):
+        if project_path != saved_authorization:
+            return None
+        try:
+            project_path.revalidate()
+        except ProjectAccessError:
+            return None
+    else:
+        try:
+            requested_authorization = authorize_project_path(
+                str(project_path),
+                saved_authorization.grant_id,
+            )
+        except ProjectAccessError:
+            return None
+        if requested_authorization != saved_authorization:
+            return None
     return result
 
 
@@ -95,13 +119,16 @@ async def ai_chat(request: ChatRequest):
         ProviderChatMessage(role="system", content=DEVSWEEP_SYSTEM_PROMPT),
     ]
     
-    # Add project context if provided
+    # A supplied project path is never treated as proof of access.
     if request.project_path:
-        path = Path(request.project_path)
-        if path.exists():
-            try:
-                analysis = analyze_project(path)
-                context = f"""
+        try:
+            authorization = authorize_project_path(request.project_path, request.access_grant_id)
+        except ProjectAccessError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        path = authorization.canonical_path
+        analysis = analyze_project(path)
+        authorization.revalidate()
+        context = f"""
 Current project: {path}
 Type: {analysis.project_type.value}
 Framework: {analysis.framework}
@@ -111,9 +138,7 @@ Git: {analysis.has_git} (clean: {analysis.git_clean})
 Cleanup candidates: {len(analysis.cleanup_candidates)}
 Total recoverable: {format_bytes(analysis.total_recoverable_bytes)}
 """
-                messages.append(ProviderChatMessage(role="system", content=context))
-            except Exception:
-                pass
+        messages.append(ProviderChatMessage(role="system", content=context))
     
     # Add history
     for msg in request.history[-10:]:  # Keep last 10 messages
@@ -124,6 +149,8 @@ Total recoverable: {format_bytes(analysis.total_recoverable_bytes)}
     
     try:
         response = await provider.chat_completion(messages)
+        if request.project_path:
+            authorization.revalidate()
         return ChatResponse(
             response=response.content,
             suggestions=response.suggestions if hasattr(response, 'suggestions') else [],
@@ -136,12 +163,18 @@ Total recoverable: {format_bytes(analysis.total_recoverable_bytes)}
 @router.post("/analyze", response_model=AnalyzeResponse)
 async def ai_analyze(request: AnalyzeRequest):
     """Analyze a project with AI."""
-    path = Path(request.project_path)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Project path not found")
+    try:
+        authorization = authorize_project_path(request.project_path, request.access_grant_id)
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    path = authorization.canonical_path
     
     # First, run deterministic scan
     analysis = analyze_project(path)
+    try:
+        authorization.revalidate()
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     
     # Build structured candidate context for Nemotron
     candidate_context = []
@@ -237,7 +270,7 @@ Return JSON:
             raise HTTPException(status_code=429, detail="Nebius rate limit reached. Retry later.") from e
         raise HTTPException(status_code=502, detail=f"Nebius inference failed: {error_type}") from e
 
-    ai_used = isinstance(provider, NebiusProvider)
+    ai_used = isinstance(provider, NebiusProvider) and not settings.DEVSWEEP_DEMO_MODE
 
     # Merge AI recommendations with scanner results (safety validation)
     # Only use AI recommendations for paths that exist in scanner results
@@ -273,13 +306,19 @@ Return JSON:
     
     total_recoverable = sum(c["size_bytes"] for c in final_candidates if c["action"] == "DELETE" and c["risk"] in ("SAFE", "CAUTION"))
 
+    try:
+        authorization.revalidate()
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
     analysis_id = None
     if ai_used:
         if len(_verified_analyses) >= 256:
             _verified_analyses.pop(next(iter(_verified_analyses)))
         analysis_id = str(uuid.uuid4())
         _verified_analyses[analysis_id] = {
-            "project_path": str(Path(request.project_path).resolve()),
+            "project_path": str(path),
+            "authorization": authorization,
             "candidates": final_candidates,
             "expires_at": time.monotonic() + VERIFIED_ANALYSIS_TTL_SECONDS,
         }

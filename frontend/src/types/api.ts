@@ -9,7 +9,10 @@ export interface CleanupCandidateResponse {
 }
 
 export interface ScanResponse {
+  scan_id?: string | null
+  project_id?: string | null
   project_path: string
+  access_grant_id?: string | null
   project_type: string
   framework: string
   package_manager: string

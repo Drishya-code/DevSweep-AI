@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { AlertCircle, CheckCircle, FolderGit2, RefreshCw } from 'lucide-react'
 import { useDevSweep } from '../context/DevSweepContext'
@@ -13,6 +13,12 @@ import { cn } from '../utils/helpers'
 import { apiErrorMessage, requestJson } from '../utils/api'
 import type { ScanResponse } from '../types/api'
 
+type StoredProject = {
+  project_id: string; project_path: string; name: string; project_type: string
+  created_at: string; last_accessed_at: string; latest_scan: ScanResponse | null
+  latest_scan_at: string | null; availability: 'available' | 'missing' | 'identity_changed' | 'requires_grant'
+}
+
 function projectName(path: string) {
   return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path
 }
@@ -23,7 +29,25 @@ export function Projects() {
   const navigate = useNavigate()
   const [selectingPath, setSelectingPath] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [retryProject, setRetryProject] = useState<ScanResponse | null>(null)
+  const [retryProject, setRetryProject] = useState<Pick<ScanResponse, 'project_path' | 'access_grant_id'> | null>(null)
+  const [storedProjects, setStoredProjects] = useState<StoredProject[]>([])
+  const [historyLoading, setHistoryLoading] = useState(true)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+
+  const loadStoredProjects = async () => {
+    setHistoryLoading(true)
+    setHistoryError(null)
+    try {
+      const data = await requestJson<{ projects: StoredProject[] }>('/api/cleanup/history/projects')
+      setStoredProjects(data.projects)
+    } catch (err) {
+      setHistoryError(apiErrorMessage(err, viewMode))
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  useEffect(() => { void loadStoredProjects() }, [])
 
   // addScanToHistory prepends each result; retain the newest scan for each path.
   const projects = scanHistory.reduce<ScanResponse[]>((unique, scan) => {
@@ -31,7 +55,7 @@ export function Projects() {
     return unique
   }, [])
 
-  const refreshAndSelect = async (project: ScanResponse) => {
+  const refreshAndSelect = async (project: Pick<ScanResponse, 'project_path' | 'access_grant_id'>) => {
     if (selectingPath) return
     setSelectingPath(project.project_path)
     setError(null)
@@ -40,7 +64,10 @@ export function Projects() {
       const refreshed = await requestJson<ScanResponse>('/api/scan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: project.project_path }),
+        body: JSON.stringify({
+          path: project.project_path,
+          access_grant_id: project.access_grant_id,
+        }),
       })
       setCurrentProject(refreshed)
       addScanToHistory(refreshed)
@@ -69,6 +96,24 @@ export function Projects() {
       </header>
 
       {error && <ErrorAlert title="Project could not be selected" message={error} dismissible onDismiss={() => setError(null)} action={retryProject ? { label: 'Retry', onClick: () => void refreshAndSelect(retryProject) } : undefined} />}
+      {historyError && <ErrorAlert title="Saved project history unavailable" message={historyError} action={{ label: 'Retry', onClick: () => void loadStoredProjects() }} />}
+      <section className="space-y-3" aria-labelledby="saved-projects-heading">
+        <div><h2 id="saved-projects-heading" className="text-lg font-semibold">Saved projects</h2><p className="text-sm text-devsweep-textMuted">Project metadata and successful scans stored by this backend.</p></div>
+        {historyLoading ? <Card role="status"><LoadingState text="Loading saved projects…" /></Card> : storedProjects.length === 0 ? <Card padding="sm"><p className="text-sm text-devsweep-textMuted">No persistent project records yet.</p></Card> : <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">{storedProjects.map(project => {
+          const sessionProject = projects.find(item => item.project_path === project.project_path)
+          const availability = sessionProject?.access_grant_id ? 'available' : project.availability
+          const latest = sessionProject || project.latest_scan
+          const availabilityText = availability === 'available' ? 'Available for a fresh scan' : availability === 'requires_grant' ? 'External folder requires a new access grant' : availability === 'identity_changed' ? 'Folder identity changed; review before using' : 'Folder is missing or inaccessible'
+          return <Card key={project.project_id}>
+            <CardHeader className="mb-3"><CardTitle as="h3" className="break-words">{project.name}</CardTitle><CardDescription className="break-all font-mono">{project.project_path}</CardDescription></CardHeader>
+            <div className="space-y-2 text-sm"><p>{project.project_type} · {availabilityText}</p><p className="text-xs text-devsweep-textMuted">Last accessed {new Date(project.last_accessed_at).toLocaleString()}{project.latest_scan_at ? ` · Latest successful scan ${new Date(project.latest_scan_at).toLocaleString()}` : ' · No successful scan recorded'}</p>
+              {latest && <p className="text-devsweep-textSecondary">Latest scan: {latest.cleanup_candidates.length} cleanup candidates · {latest.total_recoverable_human} candidate size</p>}
+              {viewMode === 'technical' && <p className="break-all font-mono text-xs text-devsweep-textMuted">Project ID: {project.project_id}</p>}
+            </div>
+            <div className="mt-3 flex justify-end"><Button size="sm" variant="secondary" onClick={() => refreshAndSelect({ project_path: project.project_path, access_grant_id: sessionProject?.access_grant_id })} disabled={Boolean(selectingPath) || availability !== 'available'} loading={selectingPath === project.project_path} icon={<RefreshCw className="h-4 w-4" />}>{availability === 'available' ? 'Refresh & select' : 'Unavailable'}</Button></div>
+          </Card>
+        })}</div>}
+      </section>
       {selectingPath && <Card role="status" padding="sm"><LoadingState variant="inline" text={`Checking access and refreshing ${selectingPath}…`} /></Card>}
 
       {projects.length === 0 ? (

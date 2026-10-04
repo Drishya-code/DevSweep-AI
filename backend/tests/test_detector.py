@@ -34,6 +34,8 @@ from ai.provider import RecordingTestProvider
 from ai.provider import MockProvider
 from ai.nebius_provider import NebiusProvider
 from ai.factory import get_ai_provider, reset_ai_provider
+from config import settings
+from security.workspace_access import external_project_grants
 import asyncio
 
 
@@ -56,12 +58,20 @@ class FakeNebiusProvider(NebiusProvider):
 
 
 @pytest.fixture(autouse=True)
-def use_fake_nebius(monkeypatch):
+def use_fake_nebius(monkeypatch, tmp_path):
     import ai.routes as ai_routes
     ai_routes._verified_analyses.clear()
+    external_project_grants.clear()
+    monkeypatch.setattr(settings, "DEVSWEEP_WORKSPACE_ROOT", tempfile.gettempdir())
+    monkeypatch.setattr(settings, "DEVSWEEP_DB_PATH", str(tmp_path / "devsweep-test.db"))
+    monkeypatch.setattr(settings, "DEVSWEEP_BACKUP_ROOT", str(tmp_path / "devsweep-test-backups"))
     monkeypatch.setattr(ai_routes, "get_ai_provider", FakeNebiusProvider)
     yield
     ai_routes._verified_analyses.clear()
+    external_project_grants.clear()
+    import asyncio
+    from persistence.database import persistence
+    asyncio.run(persistence.close())
 
 
 class TestProjectDetection:

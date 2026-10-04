@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { AlertCircle, CheckCircle, Database, FolderGit2, HardDrive, Search, ShieldAlert, Sparkles } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
@@ -21,6 +21,23 @@ export function Dashboard() {
   const { viewMode } = useViewMode()
   const [error, setError] = useState<string | null>(null)
   const [failedScanRequest, setFailedScanRequest] = useState<{ endpoint: string; body?: object } | null>(null)
+  const [historySummary, setHistorySummary] = useState<{ projects: number; scans: number; plans: number; executions: number } | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(true)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+
+  const loadHistorySummary = async () => {
+    setHistoryLoading(true)
+    setHistoryError(null)
+    try {
+      setHistorySummary(await requestJson<{ projects: number; scans: number; plans: number; executions: number }>('/api/cleanup/history/summary'))
+    } catch (summaryError) {
+      setHistoryError(apiErrorMessage(summaryError, viewMode))
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  useEffect(() => { void loadHistorySummary() }, [])
 
   const latestScans = useMemo(() => {
     const byPath = new Map<string, ScanResponse>()
@@ -91,6 +108,10 @@ export function Dashboard() {
       </header>
 
       {error && <ErrorAlert title="Scan failed" message={error} dismissible onDismiss={() => setError(null)} action={{ label: 'Retry scan', onClick: () => failedScanRequest && runScan(failedScanRequest.endpoint, failedScanRequest.body) }} />}
+      <Card>
+        <div className="flex flex-wrap items-start justify-between gap-3"><div><CardTitle as="h2">Persistent activity</CardTitle><CardDescription>Records stored by this backend across restarts. Candidate sizes are not total disk usage; verification records are not backups.</CardDescription></div><Button size="sm" variant="secondary" onClick={() => void loadHistorySummary()}>Refresh</Button></div>
+        {historyError ? <ErrorAlert title="Persistent activity unavailable" message={historyError} action={{ label: 'Retry', onClick: () => void loadHistorySummary() }} /> : historyLoading ? <LoadingState variant="inline" text="Loading saved history…" /> : historySummary && <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">{Object.entries({ Projects: historySummary.projects, Scans: historySummary.scans, 'Cleanup plans': historySummary.plans, Executions: historySummary.executions }).map(([label, value]) => <div key={label} className="rounded-lg border border-devsweep-border p-3"><p className="text-xs text-devsweep-textMuted">{label}</p><p className="font-mono text-lg font-semibold">{value}</p></div>)}</div>}
+      </Card>
       {isScanning && <Card role="status" padding="sm"><LoadingState variant="inline" text="Scanning workspace…" /></Card>}
 
       <section aria-label="Workspace statistics" className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">

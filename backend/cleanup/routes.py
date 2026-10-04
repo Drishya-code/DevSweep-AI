@@ -4,6 +4,8 @@ from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from pathlib import Path
+import uuid
+import asyncio
 
 from cleanup.engine import (
     CleanupEngine,
@@ -17,10 +19,135 @@ from cleanup.engine import (
     ActionType,
 )
 from scanner.detector import analyze_project
+from security.workspace_access import ProjectAccessError, ProjectAuthorization, authorize_project_path
+from persistence.database import persistence, project_key
+from persistence.backups import BackupError, PartialRestoreError, create_verified_backup, restore_verified_backup, verify_backup, verify_source_matches
 from config import settings
+import json
 
 
 router = APIRouter(tags=["cleanup"])
+
+
+@router.get("/history/projects")
+async def get_project_history():
+    """Return project metadata without treating history as filesystem authorization."""
+    from persistence.database import project_key
+    records = await persistence.projects()
+    for record in records:
+        record.pop("identity", None)
+        path = Path(record["project_path"])
+        if not path.exists():
+            record["availability"] = "missing"
+            continue
+        try:
+            current = authorize_project_path(str(path))
+            record["availability"] = "available" if project_key(current) == record["project_id"] else "identity_changed"
+        except ProjectAccessError:
+            record["availability"] = "requires_grant"
+    return {"projects": records}
+
+
+@router.get("/history/scans")
+async def get_scan_history(limit: int = 100):
+    return {"scans": await persistence.scans(max(1, min(limit, 500)))}
+
+
+@router.get("/history/summary")
+async def get_persistent_history_summary():
+    return await persistence.history_summary()
+
+
+@router.get("/history/plans")
+async def get_plan_history(project_id: Optional[str] = None, limit: int = 100):
+    return {"plans": await persistence.plans(project_id, max(1, min(limit, 500)))}
+
+
+@router.get("/history/executions")
+async def get_execution_history(limit: int = 100):
+    return {"executions": await persistence.executions(max(1, min(limit, 500)))}
+
+
+@router.get("/history/executions/{execution_id}")
+async def get_execution_history_detail(execution_id: str):
+    rows = await persistence.executions(1, execution_id)
+    if not rows:
+        raise HTTPException(status_code=404, detail="Cleanup execution history not found")
+    return rows[0]
+
+
+@router.get("/backups")
+async def get_recoverable_backups(project_id: Optional[str] = None):
+    """List only integrity-verified backups whose cleanup item was recorded deleted."""
+    return {"backups": await persistence.list_recoverable_backups(project_id)}
+
+
+@router.get("/backups/{backup_id}")
+async def inspect_recoverable_backup(backup_id: str, offset: int = 0, limit: int = 100):
+    backup = await persistence.get_recoverable_backup(backup_id)
+    if not backup:
+        raise HTTPException(status_code=404, detail="Verified backup for a completed cleanup item was not found.")
+    try:
+        _, entries = await asyncio.to_thread(verify_backup, backup)
+    except BackupError as exc:
+        raise HTTPException(status_code=409, detail=f"Backup integrity check failed: {exc}") from exc
+    safe_offset = max(0, offset)
+    safe_limit = max(1, min(limit, 500))
+    return {
+        "backup_id": backup["backup_id"], "path": backup["path"],
+        "size_bytes": backup["size_bytes"], "sha256": backup["sha256"],
+        "entry_count": len(entries), "offset": safe_offset, "limit": safe_limit,
+        "entries": entries[safe_offset:safe_offset + safe_limit],
+        "has_more": safe_offset + safe_limit < len(entries),
+    }
+
+
+@router.get("/restore/history")
+async def get_restore_history(limit: int = 100):
+    return {"restores": await persistence.list_restore_records(max(1, min(limit, 500)))}
+
+
+class RestoreRequest(BaseModel):
+    backup_id: str
+    project_path: str
+    approved: bool = False
+    access_grant_id: Optional[str] = None
+
+
+@router.post("/restore")
+async def restore_backup(request: RestoreRequest):
+    if not request.approved:
+        raise HTTPException(status_code=400, detail="Explicit approval is required to restore this backup.")
+    backup = await persistence.get_recoverable_backup(request.backup_id)
+    if not backup:
+        raise HTTPException(status_code=404, detail="Verified backup for a completed cleanup item was not found.")
+    try:
+        authorization = authorize_project_path(request.project_path, request.access_grant_id)
+        if authorization.canonical_path != Path(backup["project_path"]).resolve(strict=True) or project_key(authorization) != backup["project_id"]:
+            raise ProjectAccessError("Backup belongs to a different project identity.")
+        authorization.revalidate()
+    except (ProjectAccessError, OSError) as exc:
+        status_code = exc.status_code if isinstance(exc, ProjectAccessError) else 409
+        raise HTTPException(status_code=status_code, detail=str(exc) if isinstance(exc, ProjectAccessError) else "Backup project is unavailable or changed.") from exc
+
+    restore_id = str(uuid.uuid4())
+    await persistence.create_restore_record(restore_id, request.backup_id, backup["project_id"])
+    try:
+        status = await asyncio.to_thread(restore_verified_backup, authorization.canonical_path, backup["path"], backup, authorization.revalidate)
+        summary = "Backup content verified and restored without overwriting existing files." if status == "completed" else "Restore stopped after a partial write. Existing files were not overwritten; inspect the destination before retrying."
+        await persistence.finish_restore_record(restore_id, status, summary)
+        return {"restore_id": restore_id, "backup_id": request.backup_id, "status": status, "summary": summary}
+    except PartialRestoreError as exc:
+        await persistence.finish_restore_record(restore_id, "partial", str(exc))
+        return {"restore_id": restore_id, "backup_id": request.backup_id, "status": "partial", "summary": str(exc)}
+    except FileExistsError as exc:
+        await persistence.finish_restore_record(restore_id, "conflict", str(exc))
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (BackupError, ProjectAccessError, OSError) as exc:
+        await persistence.finish_restore_record(restore_id, "failed", str(exc))
+        if isinstance(exc, ProjectAccessError):
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=f"Restore failed safely: {exc}") from exc
 
 
 class CleanupItemRequest(BaseModel):
@@ -40,6 +167,7 @@ class CleanupPlanRequest(BaseModel):
     project_path: str
     analysis_id: Optional[str] = None
     approved: bool = False
+    scan_id: Optional[str] = None
 
 
 class CleanupPlanResponse(BaseModel):
@@ -59,10 +187,14 @@ class ExecuteCleanupRequest(BaseModel):
 
 
 class ExecuteCleanupResponse(BaseModel):
+    execution_id: Optional[str] = None
+    status: str = "completed"
     success: bool
     items_processed: int
     items_deleted: int
     items_failed: int
+    items_skipped: int = 0
+    items_unknown: int = 0
     bytes_freed: int
     bytes_freed_human: str
     errors: List[str]
@@ -104,25 +236,25 @@ def get_effective_risk(item: CleanupItem) -> RiskLevel:
 @router.post("/plan", response_model=CleanupPlanResponse)
 async def create_cleanup_plan(request: CleanupPlanRequest):
     """Create a cleanup plan from scan results."""
-    # Validate project path
-    project_path = Path(request.project_path).resolve()
-    try:
-        project_path.relative_to(settings.workspace_root.resolve())
-    except ValueError:
-        pass  # Allow explicit paths
-
-    if not project_path.exists():
-        raise HTTPException(status_code=404, detail="Project path not found")
-
     # Require a successful Nebius analysis for this exact project. Use server-side
     # analysis data so client-supplied risks/actions cannot replace AI output.
     from ai.routes import take_verified_analysis
-    verified = take_verified_analysis(request.analysis_id or "", project_path)
+    verified = take_verified_analysis(request.analysis_id or "", Path(request.project_path))
     if not verified:
         raise HTTPException(status_code=403, detail="Successful Nebius analysis is required before creating a cleanup plan.")
+    authorization: ProjectAuthorization = verified["authorization"]
+    try:
+        authorization.revalidate()
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    project_path = authorization.canonical_path
 
     # Authoritative scanner validation: re-scan the project to get real scanner risks
-    analysis = analyze_project(project_path)
+    try:
+        analysis = analyze_project(project_path)
+        authorization.revalidate()
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     scanner_candidate_map = {c.path: c for c in analysis.cleanup_candidates}
 
     verified_candidates = {c["path"]: c for c in verified["candidates"]}
@@ -176,16 +308,31 @@ async def create_cleanup_plan(request: CleanupPlanRequest):
         plan.warnings.append(f"{len(caution_items)} CAUTION items require explicit approval")
 
     # Capture pre-cleanup protected file state
+    try:
+        authorization.revalidate()
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     pre_cleanup_engine = VerificationEngine(project_path)
     pre_cleanup_engine.capture_pre_cleanup_state()
+    try:
+        authorization.revalidate()
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     pre_cleanup_snapshot = pre_cleanup_engine._pre_cleanup_protected
 
     # Generate plan ID and store
-    import uuid
     plan_id = str(uuid.uuid4())[:8]
+    try:
+        project_id, item_ids = await persistence.persist_plan(authorization, plan_id, plan, pre_cleanup_snapshot, request.scan_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     _cleanup_plans[plan_id] = {
         "plan": plan,
         "project_path": str(project_path),
+        "authorization": authorization,
+        "project_id": project_id,
+        "item_ids": item_ids,
+        "execution_id": None,
     }
     _pre_cleanup_snapshots[plan_id] = pre_cleanup_snapshot
 
@@ -222,13 +369,22 @@ async def execute_cleanup(request: ExecuteCleanupRequest):
         raise HTTPException(status_code=404, detail="Cleanup plan not found")
 
     plan = plan_data["plan"]
-    project_path = Path(plan_data["project_path"])
+    authorization: ProjectAuthorization = plan_data["authorization"]
+    try:
+        authorization.revalidate()
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    project_path = authorization.canonical_path
 
     # Get the pre-cleanup snapshot for verification
     pre_cleanup_snapshot = _pre_cleanup_snapshots.get(request.plan_id, {})
 
     # Get fresh scanner candidates for allowlist validation
-    analysis = analyze_project(project_path)
+    try:
+        analysis = analyze_project(project_path)
+        authorization.revalidate()
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     scanner_candidates = [
         {
             "path": c.path,
@@ -241,13 +397,92 @@ async def execute_cleanup(request: ExecuteCleanupRequest):
 
     engine = CleanupEngine(project_path)
     engine.set_scanner_candidates(scanner_candidates)
-    result = engine.execute_plan(plan, approved=request.approved)
+    engine.set_authorization_guard(authorization.revalidate)
+    execution_id = str(uuid.uuid4())
+    delete_items = [item for item in plan.items if item.action == ActionType.DELETE]
+    eligible_count = sum(
+        get_effective_risk(item) == RiskLevel.SAFE
+        or (get_effective_risk(item) == RiskLevel.CAUTION and request.approved)
+        for item in delete_items
+    )
+    await persistence.create_execution(execution_id, request.plan_id, plan_data["project_id"], len(delete_items), eligible_count, request.approved)
+    indexes_by_path: Dict[str, List[int]] = {}
+    for index, item in enumerate(plan.items):
+        if item.action == ActionType.DELETE:
+            indexes_by_path.setdefault(item.path, []).append(index)
+    cursors: Dict[str, int] = {}
+    active_item_ids: Dict[str, str] = {}
+    attempted = 0
+    deleted = 0
+    failed_items = 0
+
+    def record_item(state: str, item_path: str, error: str, byte_count: int) -> None:
+        nonlocal attempted, deleted, failed_items
+        indexes = indexes_by_path.get(item_path, [])
+        if state == "attempt":
+            cursor = cursors.get(item_path, 0)
+            if cursor >= len(indexes):
+                return
+            index = indexes[cursor]
+            cursors[item_path] = cursor + 1
+            item_id = plan_data["item_ids"][index]
+            active_item_ids[item_path] = item_id
+            attempted += 1
+            persistence.record_outcome_sync(execution_id, item_id, "in_progress")
+        elif item_path in active_item_ids:
+            if state == "completed": deleted += 1
+            else: failed_items += 1
+            persistence.record_outcome_sync(execution_id, active_item_ids[item_path], state, error, byte_count, complete=True)
+
+    engine.set_execution_recorder(record_item)
+
+    def backup_before_delete(item_path: Path, item: CleanupItem) -> None:
+        authorization.revalidate()
+        item_id = active_item_ids.get(item.path)
+        if not item_id:
+            raise BackupError("Cleanup item could not be linked to its execution record.")
+        backup_id = str(uuid.uuid4())
+        storage_path = str(settings.backup_root / backup_id)
+        try:
+            saved = create_verified_backup(project_path, item.path, backup_id, plan_data["project_id"], execution_id)
+            verify_source_matches(project_path, item.path, saved["entries"])
+            authorization.revalidate()
+            persistence.record_backup_sync(
+                backup_id, execution_id, item_id, plan_data["project_id"], item.path,
+                saved["storage_path"], saved["size_bytes"], saved["sha256"],
+                saved["manifest_json"], "verified",
+            )
+        except Exception:
+            # A failed/partial artifact is never listed as recoverable. The original
+            # remains untouched because the engine will not call delete_path.
+            try:
+                persistence.record_backup_sync(backup_id, execution_id, item_id, plan_data["project_id"], item.path, storage_path, 0, "0" * 64, "[]", "failed")
+            except Exception:
+                pass
+            raise
+
+    engine.set_pre_delete_guard(backup_before_delete)
+    try:
+        result = await asyncio.to_thread(engine.execute_plan, plan, request.approved)
+        execution_status = "completed" if result.success and deleted == len(delete_items) else "partial" if deleted else "failed"
+        skipped = max(0, len(delete_items) - attempted)
+        await persistence.finish_execution(execution_id, execution_status, attempted, deleted, failed_items, skipped, 0, result.bytes_freed, "; ".join(result.errors))
+    except Exception as exc:
+        execution_status = "unknown"
+        unknown = max(1, len(delete_items) - attempted)
+        await persistence.finish_execution(execution_id, execution_status, attempted, deleted, failed_items, 0, unknown, result.bytes_freed if "result" in locals() else 0, f"Execution raised {type(exc).__name__}; filesystem outcome may be unknown.")
+        raise HTTPException(status_code=500, detail="Cleanup execution failed; recorded outcome is unknown.") from exc
+    plan_data["execution_id"] = execution_id
 
     return ExecuteCleanupResponse(
+        execution_id=execution_id,
+        status=execution_status,
         success=result.success,
         items_processed=result.items_processed,
         items_deleted=result.items_deleted,
         items_failed=result.items_failed,
+        items_skipped=max(0, len(delete_items) - attempted),
+        items_unknown=0,
         bytes_freed=result.bytes_freed,
         bytes_freed_human=format_bytes(result.bytes_freed),
         errors=result.errors,
@@ -263,9 +498,21 @@ async def verify_project(request: dict, project_type: str = "unknown"):
     if not project_path:
         raise HTTPException(status_code=422, detail="project_path is required")
 
-    path = Path(project_path).resolve()
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Project path not found")
+    plan_data = _cleanup_plans.get(plan_id) if plan_id else None
+    if plan_id and not plan_data:
+        raise HTTPException(status_code=404, detail="Cleanup plan not found")
+    supplied_grant_id = request.get("access_grant_id")
+    try:
+        authorization = authorize_project_path(project_path, supplied_grant_id)
+        if plan_data:
+            plan_authorization: ProjectAuthorization = plan_data["authorization"]
+            plan_authorization.revalidate()
+            if authorization != plan_authorization:
+                raise ProjectAccessError("Project authorization does not match the cleanup plan.")
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    path = authorization.canonical_path
 
     engine = VerificationEngine(path)
 
@@ -279,6 +526,12 @@ async def verify_project(request: dict, project_type: str = "unknown"):
         engine.capture_pre_cleanup_state()
 
     result = engine.verify(project_type)
+    try:
+        authorization.revalidate()
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    await persistence.persist_verification(plan_data.get("execution_id") if plan_data else None, plan_id, result)
 
     return VerificationResponse(
         passed=result.passed,
@@ -293,6 +546,10 @@ async def get_cleanup_plan(plan_id: str):
     plan = _cleanup_plans.get(plan_id)
     if not plan:
         raise HTTPException(status_code=404, detail="Cleanup plan not found")
+    try:
+        plan["authorization"].revalidate()
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     return CleanupPlanResponse(
         plan_id=plan_id,
@@ -326,12 +583,20 @@ async def generate_plan_from_scan(request: dict, default_risk_level: str = "SAFE
     if not project_path:
         raise HTTPException(status_code=422, detail="project_path is required")
 
+    try:
+        authorization = authorize_project_path(project_path, request.get("access_grant_id"))
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
     # Analyze project with AI
     from ai.routes import ai_analyze
     from ai.routes import AnalyzeRequest
 
     # Run the AI analysis
-    analyze_request = AnalyzeRequest(project_path=project_path)
+    analyze_request = AnalyzeRequest(
+        project_path=project_path,
+        access_grant_id=request.get("access_grant_id"),
+    )
     analysis = await ai_analyze(analyze_request)
     if not analysis.ai_used:
         raise HTTPException(
@@ -339,14 +604,12 @@ async def generate_plan_from_scan(request: dict, default_risk_level: str = "SAFE
             detail=f"Successful Nebius inference is required to generate a cleanup plan (provider: {analysis.provider_name}).",
         )
     from ai.routes import take_verified_analysis
-    verified = take_verified_analysis(analysis.analysis_id or "", Path(project_path).resolve())
+    verified = take_verified_analysis(analysis.analysis_id or "", authorization)
     if not verified:
         raise HTTPException(status_code=403, detail="Verified Nebius analysis is unavailable or expired.")
 
     # Generate plan from AI-analyzed candidates
-    path = Path(project_path).resolve()
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Project path not found")
+    path = authorization.canonical_path
 
     generator = PlanGenerator(path)
     plan = generator.generate_plan(
@@ -364,16 +627,31 @@ async def generate_plan_from_scan(request: dict, default_risk_level: str = "SAFE
     )
 
     # Capture pre-cleanup protected file state
+    try:
+        authorization.revalidate()
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     pre_cleanup_engine = VerificationEngine(path)
     pre_cleanup_engine.capture_pre_cleanup_state()
+    try:
+        authorization.revalidate()
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     pre_cleanup_snapshot = pre_cleanup_engine._pre_cleanup_protected
 
     # Store plan
-    import uuid
     plan_id = str(uuid.uuid4())[:8]
+    try:
+        project_id, item_ids = await persistence.persist_plan(authorization, plan_id, plan, pre_cleanup_snapshot, request.get("scan_id"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     _cleanup_plans[plan_id] = {
         "plan": plan,
         "project_path": str(path),
+        "authorization": authorization,
+        "project_id": project_id,
+        "item_ids": item_ids,
+        "execution_id": None,
     }
     _pre_cleanup_snapshots[plan_id] = pre_cleanup_snapshot
 

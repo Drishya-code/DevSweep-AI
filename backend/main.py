@@ -1,11 +1,14 @@
 from contextlib import asynccontextmanager
+import ipaddress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 import structlog
 
 from config import settings
 from ai.factory import get_ai_provider, reset_ai_provider
+from persistence.database import persistence
 
 # Configure structured logging
 structlog.configure(
@@ -29,11 +32,23 @@ structlog.configure(
 logger = structlog.get_logger()
 
 
+def _is_loopback_listener(host: str) -> bool:
+    if host.lower() == "testserver":
+        return True  # Starlette's in-process test transport, not a network listener.
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host.lower() == "localhost"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting DevSweep AI backend", version="0.1.0")
     logger.info("Configuration", demo_mode=settings.DEVSWEEP_DEMO_MODE, workspace_root=str(settings.workspace_root))
+
+    # Create or migrate the application history database before accepting requests.
+    await persistence.initialize()
 
     # Initialize AI provider
     try:
@@ -47,6 +62,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down DevSweep AI backend")
     reset_ai_provider()
+    await persistence.close()
 
 
 app = FastAPI(
@@ -60,10 +76,23 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.FRONTEND_URL, "http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["Content-Type"],
 )
+
+
+@app.middleware("http")
+async def reject_non_loopback_listener(request, call_next):
+    # Also fail closed if a server runner bypasses BACKEND_HOST validation by
+    # supplying its own wildcard/LAN --host argument.
+    server = request.scope.get("server")
+    if server and server[0] and not _is_loopback_listener(str(server[0])):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "DevSweep AI accepts requests only through a loopback listener."},
+        )
+    return await call_next(request)
 
 
 @app.get("/health")
@@ -93,10 +122,12 @@ async def get_config():
 from scanner.routes import router as scanner_router
 from cleanup.routes import router as cleanup_router
 from ai.routes import router as ai_router
+from security.routes import router as access_router
 
 app.include_router(scanner_router, prefix="/api/scan", tags=["scanner"])
 app.include_router(cleanup_router, prefix="/api/cleanup", tags=["cleanup"])
 app.include_router(ai_router, prefix="/api/ai", tags=["ai"])
+app.include_router(access_router, prefix="/api/access", tags=["access"])
 
 
 if __name__ == "__main__":

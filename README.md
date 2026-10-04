@@ -136,7 +136,10 @@ npm run dev
 | `NEBIUS_BASE_URL` | API base URL (default: https://api.tokenfactory.us-central1.nebius.com/v1/) | No |
 | `NEBIUS_MODEL` | Model name (default: nvidia/nemotron-3-super-120b-a12b) | No |
 | `DEVSWEEP_WORKSPACE_ROOT` | Root directory to scan (default: current dir) | No |
+| `DEVSWEEP_DB_PATH` | SQLite application-history file (default: `./data/devsweep.db`, relative to the configured workspace root) | No |
+| `DEVSWEEP_BACKUP_ROOT` | Verified content-backup directory (default: per-user application data directory; must be outside scanned project trees) | No |
 | `DEVSWEEP_DEMO_MODE` | Enable demo fixture (true/false) | No |
+| `BACKEND_HOST` | Loopback bind address (default: `127.0.0.1`; non-loopback values are rejected until remote authentication exists) | No |
 
 ## Demo Mode
 
@@ -148,7 +151,29 @@ uvicorn main:app --reload        # from backend/
 # POST /api/scan/demo/reset also regenerates on demand
 ```
 
+## Local Workspace Security
+
+The backend is local-first and binds to `127.0.0.1` by default. `BACKEND_HOST` accepts only `localhost` or a loopback IP address. Non-loopback/LAN binding is rejected because this application does not provide remote authentication. CORS restricts browser origins to local development origins; CORS is not authentication or authorization.
+
+Project paths are canonicalized by the backend. Paths inside `DEVSWEEP_WORKSPACE_ROOT` need no separate grant. External folders require an explicit, folder-scoped grant created by the local user through `POST /api/access/grants`.
+
+The response contains an opaque `grant_id`. Pass it as `access_grant_id` with project scan, AI analysis/chat, and direct plan-generation requests. A successful AI analysis binds its one-use analysis authorization to the same project and grant. Verification accepts the grant ID in its JSON body; execution revalidates the authorization retained with the plan. Revoke a grant with `DELETE /api/access/grants/{grant_id}`. A grant is scoped to one canonical directory, expires after one hour, is invalidated if that directory identity changes, and is held only in process memory; backend restart revokes all grants.
+
+The built-in UI does not yet provide grant creation/revocation controls. External-folder access is available through the backend API/OpenAPI interface; the ordinary in-workspace UI flow is unchanged. Demo scanning/reset also observes the workspace boundary; if the fixed demo folder is outside the configured root, explicitly grant that exact folder first. `/api/scan/demo/reset` regenerates demo fixture data and should only be invoked intentionally.
+
+## Persistent History
+
+Projects, successful scan summaries, cleanup plans/items, execution outcomes, protected-file existence metadata, verification results, content-backup manifests, and restore outcomes are stored in the SQLite database configured by `DEVSWEEP_DB_PATH`. The backend runs versioned schema initialization at startup. Existing databases are inspected and backed up with SQLite's backup API before schema upgrades; ambiguous/incompatible schemas fail startup without being modified. External access grants and one-use AI analysis authorizations are never stored. Historical cleanup plans are review-only after a restart and cannot authorize execution. Protected-file metadata records existence checks only; this is not a content backup and does not make files recoverable.
+
+### Content backups and restoration
+
+Before deleting an approved `SAFE` item, or a `CAUTION` item with explicit approval, the backend saves its file contents under `DEVSWEEP_BACKUP_ROOT` and verifies a SHA-256 manifest. The default is `%LOCALAPPDATA%/DevSweepAI/backups` on Windows and the user's application-data directory on other platforms. Configure an alternate location only when it is outside every project tree that may be scanned or cleaned. Backups are not automatically pruned; manage their storage deliberately. Candidates containing symlinks, junctions, reparse points, unsupported objects, or changed content fail closed and are not deleted.
+
+The Restore Center lists only verified backups whose corresponding cleanup outcome is recorded complete. Restoration requires the same currently authorized project identity and explicit confirmation. Existing destinations are never overwritten. Directory restores can be partial if the filesystem fails mid-write; those outcomes are recorded and must be inspected before retrying. Backup manifests retain content hashes, sizes, relative paths, file mode, and modification time; ownership and platform-specific ACLs are not preserved. Backup contents are not encrypted by DevSweep; the default Windows location inherits the current user's application-data permissions. Backups contain real project data and should be protected like the original workspace. Do not configure a shared or untrusted backup location.
+
 ## Project Structure
+
+The API also denies requests if a server runner bypasses the host setting and exposes a wildcard/non-loopback listener. Do not place an unauthenticated remote reverse proxy in front of the backend.
 
 ```
 DevSweepAI/
@@ -157,7 +182,8 @@ DevSweepAI/
 │   ├── scanner/            # Project detection, framework detection, candidates
 │   ├── cleanup/            # Cleanup engine, plan generator, verification
 │   ├── tools/              # Filesystem/git tools with protection allowlists
-│   ├── tests/              # 40 unit + integration tests
+│   ├── persistence/        # Versioned SQLite history schema and repositories
+│   ├── tests/              # Unit + integration tests
 │   ├── main.py             # FastAPI entry point
 │   ├── config.py           # Configuration management
 │   └── requirements.txt
@@ -182,6 +208,8 @@ DevSweepAI/
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health` | Health check with AI provider status |
+| POST | `/api/access/grants` | Grant temporary access to one external project folder |
+| DELETE | `/api/access/grants/{grant_id}` | Revoke a folder grant |
 | POST | `/api/scan/` | Scan a workspace path |
 | GET | `/api/scan/demo` | Scan the demo project |
 | POST | `/api/scan/demo/reset` | Regenerate demo data |
@@ -191,6 +219,14 @@ DevSweepAI/
 | POST | `/api/cleanup/generate-plan` | Generate cleanup plan (AI-validated) |
 | POST | `/api/cleanup/execute` | Execute approved plan (with scanner allowlist re-validation) |
 | POST | `/api/cleanup/verify` | Verify project health after cleanup |
+| GET | `/api/cleanup/history/projects` | Persistent project metadata and current path availability |
+| GET | `/api/cleanup/history/scans` | Persistent successful scan history |
+| GET | `/api/cleanup/history/plans` | Historical plans, always review-only through this endpoint |
+| GET | `/api/cleanup/history/executions` | Persistent execution outcomes and verification metadata |
+| GET | `/api/cleanup/history/summary` | Persistent record counts for the dashboard |
+| GET | `/api/cleanup/backups` | Verified backup items from completed cleanup operations |
+| POST | `/api/cleanup/restore` | Restore one verified item (requires project path and explicit approval) |
+| GET | `/api/cleanup/restore/history` | Persistent restore outcomes |
 
 ## License
 

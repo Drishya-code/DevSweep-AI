@@ -26,6 +26,9 @@ describe('Projects', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     ;(global.fetch as vi.Mock).mockReset()
+    ;(global.fetch as vi.Mock).mockImplementation((url: string) => url === '/api/cleanup/history/projects'
+      ? Promise.resolve({ ok: true, json: async () => ({ projects: [] }) })
+      : Promise.resolve(undefined))
     testView.mode = 'simple'
     setMockContext({})
   })
@@ -87,7 +90,7 @@ describe('Projects', () => {
     renderPage()
     ;(global.fetch as vi.Mock).mockReturnValueOnce(new Promise(resolve => { resolveScan = resolve }))
     fireEvent.click(screen.getByRole('button', { name: 'Refresh & select' }))
-    expect(screen.getByRole('status')).toHaveTextContent('Checking access and refreshing C:\\work\\demo-app')
+    expect(screen.getAllByRole('status').some(status => status.textContent?.includes('Checking access and refreshing C:\\work\\demo-app'))).toBe(true)
     await act(async () => { resolveScan({ ok: true, json: async () => project }) })
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })

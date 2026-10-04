@@ -54,6 +54,20 @@ describe('CleanupPlans', () => {
     expect(screen.getByText('No project selected')).toBeInTheDocument()
   })
 
+  it('loads persisted plans as review-only and never exposes execution approval', async () => {
+    ;(global.fetch as vi.Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ plans: [{
+      plan_id: 'saved-plan', status: 'review_only', can_execute: false, created_at: '2026-01-01T00:00:00Z',
+      summary: { total_safe_bytes: 12, total_caution_bytes: 0, total_dangerous_bytes: 0, warnings: [], verification_steps: [] },
+      items: [{ path: 'dist', action: 'DELETE', risk: 'SAFE', reason: 'Generated files', estimated_bytes: 12 }],
+    }] }) })
+    setMockContext({ currentProject: { ...mockCurrentProject, project_id: 'project-id' }, currentPlan: null, realInferenceAvailable: true })
+    render(<MemoryRouter><CleanupPlans /></MemoryRouter>)
+    expect(await screen.findByText(/Historical, review-only plan/)).toBeInTheDocument()
+    expect(screen.queryByLabelText(/I reviewed the listed items/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Approve & Execute Cleanup' })).not.toBeInTheDocument()
+    expect(global.fetch).toHaveBeenCalledWith('/api/cleanup/history/plans?project_id=project-id', undefined)
+  })
+
   it('labels mock mode and disables plan generation without Nebius', () => {
     setMockContext({ currentProject: mockCurrentProject, aiProvider: 'mock', aiModel: 'devsweep-demo', realInferenceAvailable: false })
     render(<MemoryRouter><CleanupPlans /></MemoryRouter>)
@@ -167,6 +181,9 @@ describe('CleanupPlans', () => {
     expect(await screen.findByText('Verification unavailable')).toBeInTheDocument()
     expect(screen.getByText('Snapshot unavailable')).toBeInTheDocument()
     expect(screen.getByText('Execution complete')).toBeInTheDocument()
+    expect(global.fetch).toHaveBeenLastCalledWith('/api/cleanup/verify?project_type=node', expect.objectContaining({
+      body: JSON.stringify({ project_path: '/test/project', plan_id: 'test-plan-123', access_grant_id: undefined }),
+    }))
   })
 
   it('reports malformed verification data as unavailable, not a completed failure', async () => {

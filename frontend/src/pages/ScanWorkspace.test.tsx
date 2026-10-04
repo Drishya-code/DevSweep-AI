@@ -203,7 +203,7 @@ describe('ScanWorkspace', () => {
     ;(global.fetch as vi.Mock)
       .mockResolvedValueOnce({
         ok: true,
-        json: async () => mockScanResult,
+        json: async () => ({ ...mockScanResult, access_grant_id: 'test-folder-grant' }),
       })
       // Mock AI analysis
       .mockResolvedValueOnce({
@@ -232,6 +232,7 @@ describe('ScanWorkspace', () => {
       expect(analyzeCall[0]).toBe('/api/ai/analyze')
       const payload = JSON.parse(analyzeCall[1].body)
       expect(payload.project_path).toBe('/test/project')
+      expect(payload.access_grant_id).toBe('test-folder-grant')
     })
   })
 

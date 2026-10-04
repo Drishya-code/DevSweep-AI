@@ -83,6 +83,7 @@ export function AIAgent() {
           message: userInput,
           history: messages.slice(-10).map(m => ({ role: m.role, content: m.content })),
           project_path: currentProject?.project_path,
+          access_grant_id: currentProject?.access_grant_id,
         }),
       })
       

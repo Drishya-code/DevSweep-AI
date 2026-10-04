@@ -9,6 +9,7 @@ import { ErrorAlert } from '../components/ui/ErrorAlert'
 import { LoadingState } from '../components/ui/LoadingState'
 import { RiskBadge } from '../components/ui/RiskBadge'
 import { cn, formatBytes } from '../utils/helpers'
+import { apiErrorMessage, requestJson } from '../utils/api'
 
 type Risk = 'SAFE' | 'CAUTION' | 'DANGEROUS'
 type PlanItem = {
@@ -32,11 +33,16 @@ type CleanupPlan = {
   warnings: string[]
   verification_steps: string[]
 }
+type PersistedPlan = { plan_id: string; status: string; can_execute: boolean; created_at: string; summary: Record<string, any>; items: PlanItem[] }
 type ExecutionResult = {
+  execution_id?: string
+  status?: string
   success: boolean
   items_processed: number
   items_deleted: number
   items_failed: number
+  items_skipped?: number
+  items_unknown?: number
   bytes_freed: number
   bytes_freed_human: string
   errors: string[]
@@ -68,11 +74,15 @@ export function CleanupPlans() {
   const [verificationError, setVerificationError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [approved, setApproved] = useState(false)
+  const [historicalPlan, setHistoricalPlan] = useState(false)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
   const executionLock = useRef(false)
 
   useEffect(() => {
     if (contextPlan && contextPlan.plan_id !== plan?.plan_id) {
       setPlan(contextPlan)
+      setHistoricalPlan(false)
       setExecution(null)
       setVerification(null)
       setVerificationError(null)
@@ -80,6 +90,30 @@ export function CleanupPlans() {
       setError(null)
     }
   }, [contextPlan, plan?.plan_id])
+
+  useEffect(() => {
+    if (contextPlan || plan || !currentProject?.project_id) return
+    let active = true
+    setHistoryLoading(true)
+    setHistoryError(null)
+    requestJson<{ plans: PersistedPlan[] }>(`/api/cleanup/history/plans?project_id=${encodeURIComponent(currentProject.project_id)}`)
+      .then(data => {
+        if (!active || !data.plans[0]) return
+        const latest = data.plans[0]
+        setPlan({
+          plan_id: latest.plan_id, items: latest.items,
+          total_safe_bytes: latest.summary.total_safe_bytes || 0,
+          total_caution_bytes: latest.summary.total_caution_bytes || 0,
+          total_dangerous_bytes: latest.summary.total_dangerous_bytes || 0,
+          requires_approval: latest.summary.requires_approval === true,
+          warnings: latest.summary.warnings || [], verification_steps: latest.summary.verification_steps || [],
+        })
+        setHistoricalPlan(true)
+      })
+      .catch(err => { if (active) setHistoryError(apiErrorMessage(err, viewMode)) })
+      .finally(() => { if (active) setHistoryLoading(false) })
+    return () => { active = false }
+  }, [currentProject?.project_id, contextPlan, plan, viewMode])
 
   const generatePlan = async () => {
     if (!currentProject || !realInferenceAvailable || loading) return
@@ -90,11 +124,16 @@ export function CleanupPlans() {
       const response = await fetch('/api/cleanup/generate-plan', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project_path: currentProject.project_path }),
+        body: JSON.stringify({
+          project_path: currentProject.project_path,
+          access_grant_id: currentProject.access_grant_id,
+          scan_id: currentProject.scan_id,
+        }),
       })
       if (!response.ok) throw new Error(await responseError(response, 'Failed to generate plan'))
       const data: CleanupPlan = await response.json()
       setPlan(data)
+      setHistoricalPlan(false)
       setCurrentPlan(data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to generate plan')
@@ -105,6 +144,7 @@ export function CleanupPlans() {
 
   const cancelReview = () => {
     setPlan(null)
+    setHistoricalPlan(false)
     setCurrentPlan(null)
     setApproved(false)
     setError(null)
@@ -112,10 +152,16 @@ export function CleanupPlans() {
 
   const verifyProject = async (planId: string) => {
     if (!currentProject) throw new Error('No project is selected for verification')
-    const response = await fetch('/api/cleanup/verify', {
+    const verifyUrl = new URL('/api/cleanup/verify', window.location.origin)
+    verifyUrl.searchParams.set('project_type', currentProject.project_type)
+    const response = await fetch(verifyUrl.pathname + verifyUrl.search, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project_path: currentProject.project_path, project_type: currentProject.project_type, plan_id: planId }),
+      body: JSON.stringify({
+        project_path: currentProject.project_path,
+        plan_id: planId,
+        access_grant_id: currentProject.access_grant_id,
+      }),
     })
     if (!response.ok) throw new Error(await responseError(response, 'Project verification failed'))
     const result: unknown = await response.json()
@@ -165,7 +211,8 @@ export function CleanupPlans() {
   const hasDangerousDelete = Boolean(plan?.items.some(item => item.action === 'DELETE' && (item.effective_risk || item.risk) === 'DANGEROUS'))
   const cautionCount = plan?.items.filter(item => item.action === 'DELETE' && (item.effective_risk || item.risk) === 'CAUTION').length || 0
   const executionSucceeded = Boolean(execution && execution.success && execution.items_failed === 0 && execution.items_deleted === execution.items_processed)
-  const executionPartial = Boolean(execution && execution.items_deleted > 0 && !executionSucceeded)
+  const executionUnknown = Boolean(execution && (execution.status === 'unknown' || (execution.items_unknown || 0) > 0))
+  const executionPartial = Boolean(execution && !executionUnknown && (execution.status === 'partial' || execution.items_deleted > 0) && !executionSucceeded)
 
   const renderPlanItem = (item: PlanItem, index: number) => {
     const effectiveRisk = item.effective_risk || item.risk
@@ -207,7 +254,7 @@ export function CleanupPlans() {
 
       {!currentProject ? (
         <Card padding="none"><EmptyState icon={<FileText className="h-16 w-16 text-devsweep-textMuted opacity-50" />} title="No project selected" description="Scan a workspace first to generate a cleanup plan." /></Card>
-      ) : !plan ? (
+      ) : historyLoading && !plan ? <Card role="status"><LoadingState text="Loading saved cleanup plans…" /></Card> : !plan ? (
         <Card className="space-y-5 text-center">
           <Bot className="mx-auto h-12 w-12 text-devsweep-accent opacity-70" />
           <div>
@@ -221,6 +268,7 @@ export function CleanupPlans() {
           <Card padding="none" className="overflow-hidden">
             <div className="border-b border-devsweep-border bg-devsweep-bgTertiary/50 p-5">
               <h2 className="font-semibold">Review plan for {currentProject.project_path.split(/[\\/]/).filter(Boolean).pop()}</h2>
+              {historicalPlan && <p className="mt-2 rounded-lg border border-devsweep-warning/30 bg-devsweep-warning/10 p-3 text-sm text-devsweep-warning">Historical, review-only plan. It cannot be executed from this saved record. Generate a fresh plan after a new authorized scan.</p>}
               <p className="mt-1 text-sm text-devsweep-textSecondary">These are the exact items the backend plan may remove.</p>
               <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <Summary label="Items" value={String(plan.items.filter(item => item.action === 'DELETE').length)} />
@@ -235,15 +283,15 @@ export function CleanupPlans() {
               <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-devsweep-textSecondary">{plan.verification_steps.map((step, i) => <li key={i}>{step}</li>)}</ul>
               {cautionCount > 0 && <p className="mt-3 text-sm text-devsweep-warning">{cautionCount} caution item(s) require your explicit approval.</p>}
               {hasDangerousDelete && <p role="alert" className="mt-3 text-sm text-devsweep-danger">This plan includes a dangerous deletion. Execution is blocked.</p>}
-              <label className="mt-4 flex cursor-pointer items-start gap-3 text-sm">
+              {!historicalPlan && <label className="mt-4 flex cursor-pointer items-start gap-3 text-sm">
                 <input type="checkbox" className="mt-0.5 h-4 w-4 accent-devsweep-accent" checked={approved} onChange={event => setApproved(event.target.checked)} disabled={hasDangerousDelete} />
                 <span>I reviewed the listed items and approve execution{cautionCount > 0 ? ', including the caution items' : ''}.</span>
-              </label>
+              </label>}
               <div className="mt-4 flex flex-wrap justify-end gap-3">
-                <Button variant="secondary" onClick={cancelReview} disabled={loading || executing}>Cancel and return</Button>
-                <Button variant="danger" onClick={executePlan} disabled={!approved || executing || hasDangerousDelete} loading={executing} icon={<Trash2 />}>
+                <Button variant="secondary" onClick={cancelReview} disabled={loading || executing}>{historicalPlan ? 'Dismiss saved plan' : 'Cancel and return'}</Button>
+                {!historicalPlan && <Button variant="danger" onClick={executePlan} disabled={!approved || executing || hasDangerousDelete} loading={executing} icon={<Trash2 />}>
                   {executing ? 'Executing cleanup…' : 'Approve & Execute Cleanup'}
-                </Button>
+                </Button>}
               </div>
               {executing && <div className="mt-4" role="status"><LoadingState variant="inline" text="Cleanup is running. This operation cannot be cancelled from the application." /></div>}
             </div>
@@ -253,9 +301,9 @@ export function CleanupPlans() {
         <div className="space-y-5" aria-live="polite">
           <Card>
             <div className="flex items-start gap-3">
-              {executionSucceeded ? <CheckCircle className="mt-0.5 h-6 w-6 text-devsweep-success" /> : executionPartial ? <AlertCircle className="mt-0.5 h-6 w-6 text-devsweep-warning" /> : <XCircle className="mt-0.5 h-6 w-6 text-devsweep-danger" />}
+              {executionSucceeded ? <CheckCircle className="mt-0.5 h-6 w-6 text-devsweep-success" /> : executionPartial || executionUnknown ? <AlertCircle className="mt-0.5 h-6 w-6 text-devsweep-warning" /> : <XCircle className="mt-0.5 h-6 w-6 text-devsweep-danger" />}
               <div className="min-w-0 flex-1">
-                <h2 className="text-lg font-semibold">{executionSucceeded ? 'Execution complete' : executionPartial ? 'Execution partially completed' : 'Execution failed'}</h2>
+                <h2 className="text-lg font-semibold">{executionSucceeded ? 'Execution complete' : executionUnknown ? 'Execution outcome unknown' : executionPartial ? 'Execution partially completed' : 'Execution failed'}</h2>
                 <p className="mt-1 text-sm text-devsweep-textSecondary">{execution.items_deleted} of {execution.items_processed} item(s) deleted; {execution.items_failed} failed. Storage reported freed: {execution.bytes_freed_human}.</p>
                 {execution.errors.length > 0 && <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-devsweep-danger">{execution.errors.map((itemError, i) => <li key={i}>{itemError}</li>)}</ul>}
               </div>
@@ -277,6 +325,7 @@ export function CleanupPlans() {
         </div>
       )}
       {error && <ErrorAlert title="Cleanup request failed" message={error} />}
+      {historyError && <ErrorAlert title="Saved plan history unavailable" message={historyError} action={{ label: 'Retry', onClick: () => { setPlan(null); setHistoryError(null) } }} />}
     </div>
   )
 }

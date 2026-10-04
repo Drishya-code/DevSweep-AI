@@ -13,6 +13,8 @@ from scanner.detector import (
     RiskLevel,
 )
 from config import settings
+from security.workspace_access import ProjectAccessError, authorize_project_path
+from persistence.database import persistence
 
 
 router = APIRouter(tags=["scanner"])
@@ -20,6 +22,7 @@ router = APIRouter(tags=["scanner"])
 
 class ScanRequest(BaseModel):
     path: Optional[str] = None
+    access_grant_id: Optional[str] = None
     include_hidden: bool = False
     max_depth: int = 3
 
@@ -33,7 +36,10 @@ class CleanupCandidateResponse(BaseModel):
 
 
 class ScanResponse(BaseModel):
+    scan_id: Optional[str] = None
+    project_id: Optional[str] = None
     project_path: str
+    access_grant_id: Optional[str] = None
     project_type: str
     framework: str
     package_manager: str
@@ -59,27 +65,22 @@ def format_bytes(bytes_val: int) -> str:
 @router.post("/", response_model=ScanResponse)
 async def scan_workspace(request: ScanRequest):
     """Scan a workspace for cleanup opportunities."""
-    # Determine scan path
-    if request.path:
-        scan_path = Path(request.path).resolve()
-    else:
-        scan_path = settings.workspace_root
-
-    # Validate path exists and is within workspace
     try:
-        scan_path.resolve().relative_to(settings.workspace_root.resolve())
-    except ValueError:
-        # Allow scanning outside workspace root if explicitly requested
-        pass
-
-    if not scan_path.exists():
-        raise HTTPException(status_code=404, detail=f"Path not found: {scan_path}")
-
-    if not scan_path.is_dir():
-        raise HTTPException(status_code=400, detail=f"Path is not a directory: {scan_path}")
+        authorization = authorize_project_path(
+            request.path or str(settings.workspace_root),
+            request.access_grant_id,
+        )
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    scan_path = authorization.canonical_path
 
     # Perform analysis
-    analysis = analyze_project(scan_path)
+    try:
+        authorization.revalidate()
+        analysis = analyze_project(scan_path)
+        authorization.revalidate()
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
     # Convert to response model
     candidates = [
@@ -93,8 +94,9 @@ async def scan_workspace(request: ScanRequest):
         for c in analysis.cleanup_candidates
     ]
 
-    return ScanResponse(
+    response = ScanResponse(
         project_path=str(scan_path),
+        access_grant_id=authorization.grant_id,
         project_type=analysis.project_type.value,
         framework=analysis.framework,
         package_manager=analysis.package_manager,
@@ -107,16 +109,24 @@ async def scan_workspace(request: ScanRequest):
         protected_paths=analysis.protected_paths,
         notes=analysis.notes,
     )
+    authorization.revalidate()
+    project_id, scan_id = await persistence.persist_scan(authorization, response.model_dump(exclude={"scan_id", "project_id", "access_grant_id"}))
+    response.scan_id = scan_id
+    response.project_id = project_id
+    return response
 
 
 @router.get("/demo", response_model=ScanResponse)
-async def scan_demo():
+async def scan_demo(access_grant_id: Optional[str] = Query(default=None)):
     """Scan the demo project fixture."""
     demo_path = Path(__file__).parent.parent.parent / "demo-project"
-    if not demo_path.exists():
-        raise HTTPException(status_code=404, detail="Demo project not found. Run setup script first.")
+    try:
+        authorization = authorize_project_path(str(demo_path), access_grant_id)
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
-    analysis = analyze_project(demo_path)
+    analysis = analyze_project(authorization.canonical_path)
+    authorization.revalidate()
 
     candidates = [
         CleanupCandidateResponse(
@@ -129,8 +139,9 @@ async def scan_demo():
         for c in analysis.cleanup_candidates
     ]
 
-    return ScanResponse(
-        project_path=str(demo_path),
+    response = ScanResponse(
+        project_path=str(authorization.canonical_path),
+        access_grant_id=authorization.grant_id,
         project_type=analysis.project_type.value,
         framework=analysis.framework,
         package_manager=analysis.package_manager,
@@ -143,6 +154,9 @@ async def scan_demo():
         protected_paths=analysis.protected_paths,
         notes=analysis.notes + " (DEMO MODE)",
     )
+    authorization.revalidate()
+    response.project_id, response.scan_id = await persistence.persist_scan(authorization, response.model_dump(exclude={"scan_id", "project_id", "access_grant_id"}))
+    return response
 
 
 @router.get("/types")
@@ -155,7 +169,7 @@ async def get_project_types():
 
 
 @router.post("/demo/reset")
-async def reset_demo():
+async def reset_demo(access_grant_id: Optional[str] = Query(default=None)):
     """Regenerate demo project with fresh realistic data."""
     import subprocess
     import sys
@@ -168,6 +182,13 @@ async def reset_demo():
         script_path = Path.cwd() / "generate_demo.py"
     if not script_path.exists():
         raise HTTPException(status_code=404, detail="Demo generation script not found")
+
+    demo_path = script_path.parent / "demo-project"
+    try:
+        authorization = authorize_project_path(str(demo_path), access_grant_id)
+        authorization.revalidate()
+    except ProjectAccessError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     
     result = subprocess.run([sys.executable, str(script_path)], capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
