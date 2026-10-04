@@ -17,6 +17,18 @@ vi.mock('react-router-dom', async (importOriginal) => {
   }
 })
 
+// Mock ViewModeContext
+const MockViewModeProvider = ({ children }: { children: React.ReactNode }) => children
+
+vi.mock('../context/ViewModeContext', async (importOriginal) => {
+  const actual = await importOriginal<any>()
+  return {
+    ...(actual as object),
+    useViewMode: () => ({ viewMode: 'simple', setViewMode: vi.fn(), toggleViewMode: vi.fn() }),
+    ViewModeProvider: MockViewModeProvider,
+  }
+})
+
 // Mock DevSweepContext - create a factory function to allow customizing the mock
 const createMockContext = (overrides = {}) => ({
   currentProject: null,

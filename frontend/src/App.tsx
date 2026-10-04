@@ -1,4 +1,5 @@
 import { Routes, Route } from 'react-router-dom'
+import { useCallback, useState } from 'react'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
 import { Dashboard } from './pages/Dashboard'
@@ -10,14 +11,18 @@ import { RestoreCenter } from './pages/RestoreCenter'
 import { AIAgent } from './pages/AIAgent'
 import { Settings } from './pages/Settings'
 import { DevSweepProvider } from './context/DevSweepContext'
+import { ViewModeProvider } from './context/ViewModeContext'
 
 function Layout() {
+  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false)
+  const closeMobileNavigation = useCallback(() => setMobileNavigationOpen(false), [])
+  const openMobileNavigation = useCallback(() => setMobileNavigationOpen(true), [])
   return (
     <div className="flex h-screen bg-devsweep-bg overflow-hidden">
-      <Sidebar />
+      <Sidebar mobileOpen={mobileNavigationOpen} onClose={closeMobileNavigation} onNavigate={closeMobileNavigation} />
       <div className="flex-1 flex flex-col overflow-hidden">
-        <TopBar />
-        <main className="flex-1 overflow-y-auto p-6">
+        <TopBar onOpenNavigation={openMobileNavigation} navigationOpen={mobileNavigationOpen} />
+        <main id="main-content" className="flex-1 overflow-y-auto p-4 sm:p-6">
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/projects" element={<Projects />} />
@@ -37,7 +42,9 @@ function Layout() {
 function App() {
   return (
     <DevSweepProvider>
-      <Layout />
+      <ViewModeProvider>
+        <Layout />
+      </ViewModeProvider>
     </DevSweepProvider>
   )
 }

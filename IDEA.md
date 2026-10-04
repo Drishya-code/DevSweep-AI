@@ -1,0 +1,1 @@
+DevSweep AI is an AI-powered workspace hygiene agent that understands what an AI coding workflow created, identifies stale or regenerable artifacts, and safely cleans them without breaking the project.

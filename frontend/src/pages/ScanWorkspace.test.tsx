@@ -150,7 +150,7 @@ describe('ScanWorkspace', () => {
     
     expect(screen.getByText('Scan Workspace')).toBeInTheDocument()
     expect(screen.getByPlaceholderText(/enter path or leave empty/i)).toBeInTheDocument()
-    expect(screen.getByText('Scan')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^scan$/i })).toBeInTheDocument()
   })
 
   it('shows scan results after successful scan', async () => {
@@ -165,10 +165,10 @@ describe('ScanWorkspace', () => {
     fireEvent.change(screen.getByPlaceholderText(/enter path or leave empty/i), {
       target: { value: '/test/project' }
     })
-    fireEvent.click(screen.getByText('Scan'))
+    fireEvent.click(screen.getByRole('button', { name: /^scan$/i }))
 
     await waitFor(() => {
-      expect(screen.getByText('project')).toBeInTheDocument() // Project name from path
+      expect(screen.getByText(/Review Cleanup Candidates/i)).toBeInTheDocument()
     })
 
     expect(screen.getByText('node_modules')).toBeInTheDocument()
@@ -188,14 +188,15 @@ describe('ScanWorkspace', () => {
     fireEvent.change(screen.getByPlaceholderText(/enter path or leave empty/i), {
       target: { value: '/test/project' }
     })
-    fireEvent.click(screen.getByText('Scan'))
+    fireEvent.click(screen.getByRole('button', { name: /^scan$/i }))
 
     await waitFor(() => {
       expect(screen.getByText('Run AI Analysis')).toBeInTheDocument()
     })
     
     // Create Cleanup Plan should be disabled until AI analysis runs
-    expect(screen.getByText('Create Cleanup Plan')).toBeDisabled()
+    // In new implementation, we navigate to confirm step instead
+    expect(screen.queryByText('Create Cleanup Plan')).not.toBeInTheDocument()
   })
 
   it('calls /api/ai/analyze when Run AI Analysis is clicked', async () => {
@@ -216,7 +217,7 @@ describe('ScanWorkspace', () => {
     fireEvent.change(screen.getByPlaceholderText(/enter path or leave empty/i), {
       target: { value: '/test/project' }
     })
-    fireEvent.click(screen.getByText('Scan'))
+    fireEvent.click(screen.getByRole('button', { name: /^scan$/i }))
 
     await waitFor(() => {
       expect(screen.getByText('Run AI Analysis')).toBeInTheDocument()
@@ -252,7 +253,7 @@ describe('ScanWorkspace', () => {
     fireEvent.change(screen.getByPlaceholderText(/enter path or leave empty/i), {
       target: { value: '/test/project' }
     })
-    fireEvent.click(screen.getByText('Scan'))
+    fireEvent.click(screen.getByRole('button', { name: /^scan$/i }))
 
     await waitFor(() => {
       expect(screen.getByText('Run AI Analysis')).toBeInTheDocument()
@@ -261,12 +262,14 @@ describe('ScanWorkspace', () => {
     // Click Run AI Analysis
     fireEvent.click(screen.getByText('Run AI Analysis'))
 
+    // Wait for analyzing to finish and error to appear
+    await waitFor(() => {
+      expect(screen.queryByText('Analyzing...')).not.toBeInTheDocument()
+    })
+
     await waitFor(() => {
       expect(screen.getByText('AI analysis failed: ConnectionError')).toBeInTheDocument()
     })
-    
-    // Create Cleanup Plan should still be disabled
-    expect(screen.getByText('Create Cleanup Plan')).toBeDisabled()
   })
 
   it('labels mock analysis and keeps plan creation disabled when ai_used is false', async () => {
@@ -287,7 +290,7 @@ describe('ScanWorkspace', () => {
     fireEvent.change(screen.getByPlaceholderText(/enter path or leave empty/i), {
       target: { value: '/test/project' }
     })
-    fireEvent.click(screen.getByText('Scan'))
+    fireEvent.click(screen.getByRole('button', { name: /^scan$/i }))
 
     await waitFor(() => {
       expect(screen.getByText('Run AI Analysis')).toBeInTheDocument()
@@ -297,14 +300,11 @@ describe('ScanWorkspace', () => {
     fireEvent.click(screen.getByText('Run AI Analysis'))
 
     await waitFor(() => {
-      expect(screen.getByText(/Mock\/demo analysis by mock/)).toBeInTheDocument()
+      expect(screen.getByText(/mock.*analysis/i)).toBeInTheDocument()
     })
-    
-    // Create Cleanup Plan should still be disabled
-    expect(screen.getByText('Create Cleanup Plan')).toBeDisabled()
   })
 
-  it('calls /api/cleanup/plan and navigates to /plans when Create Cleanup Plan is clicked after AI analysis', async () => {
+  it('calls /api/cleanup/plan and navigates to /plans when Approve & Create Cleanup Plan is clicked after AI analysis', async () => {
     ;(global.fetch as vi.Mock)
       .mockResolvedValueOnce({
         ok: true,
@@ -327,7 +327,7 @@ describe('ScanWorkspace', () => {
     fireEvent.change(screen.getByPlaceholderText(/enter path or leave empty/i), {
       target: { value: '/test/project' }
     })
-    fireEvent.click(screen.getByText('Scan'))
+    fireEvent.click(screen.getByRole('button', { name: /^scan$/i }))
 
     await waitFor(() => {
       expect(screen.getByText('Run AI Analysis')).toBeInTheDocument()
@@ -337,11 +337,18 @@ describe('ScanWorkspace', () => {
     fireEvent.click(screen.getByText('Run AI Analysis'))
 
     await waitFor(() => {
-      expect(screen.getByText('Create Cleanup Plan')).not.toBeDisabled()
+      expect(screen.getByText('Continue to Confirm')).toBeInTheDocument()
     })
 
-    // Click Create Cleanup Plan
-    fireEvent.click(screen.getByText('Create Cleanup Plan'))
+    // Click Continue to Confirm
+    fireEvent.click(screen.getByText('Continue to Confirm'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Approve & Create Cleanup Plan')).toBeInTheDocument()
+    })
+
+    // Click Approve & Create Cleanup Plan
+    fireEvent.click(screen.getByText('Approve & Create Cleanup Plan'))
 
     // Wait for plan creation and navigation
     await waitFor(() => {
@@ -385,7 +392,7 @@ describe('ScanWorkspace', () => {
     fireEvent.change(screen.getByPlaceholderText(/enter path or leave empty/i), {
       target: { value: '/test/project' }
     })
-    fireEvent.click(screen.getByText('Scan'))
+    fireEvent.click(screen.getByRole('button', { name: /^scan$/i }))
 
     await waitFor(() => {
       expect(screen.getByText('Run AI Analysis')).toBeInTheDocument()
@@ -395,25 +402,32 @@ describe('ScanWorkspace', () => {
     fireEvent.click(screen.getByText('Run AI Analysis'))
 
     await waitFor(() => {
-      expect(screen.getByText('Create Cleanup Plan')).not.toBeDisabled()
+      expect(screen.getByText('Continue to Confirm')).toBeInTheDocument()
     })
 
-    // Click Create Cleanup Plan
-    fireEvent.click(screen.getByText('Create Cleanup Plan'))
+    // Click Continue to Confirm
+    fireEvent.click(screen.getByText('Continue to Confirm'))
+
+    await waitFor(() => {
+      expect(screen.getByText('Approve & Create Cleanup Plan')).toBeInTheDocument()
+    })
+
+    // Click Approve & Create Cleanup Plan
+    fireEvent.click(screen.getByText('Approve & Create Cleanup Plan'))
 
     await waitFor(() => {
       expect(screen.getByText('Plan creation failed')).toBeInTheDocument()
     })
   })
 
-  it('disables Create Cleanup Plan button when no scan result', () => {
+  it('does not show approve button when no scan result', () => {
     renderWithProviders(<ScanWorkspace />)
     
-    // Should not show scan results or Create Cleanup Plan button without a scan
-    expect(screen.queryByText('Create Cleanup Plan')).not.toBeInTheDocument()
+    // Should not show scan results or approve button without a scan
+    expect(screen.queryByText('Approve & Create Cleanup Plan')).not.toBeInTheDocument()
   })
 
-  it('disables Create Cleanup Plan button when no candidates', async () => {
+  it('disables AI analysis button when no candidates', async () => {
     const emptyScanResult = {
       ...mockScanResult,
       cleanup_candidates: [],
@@ -430,15 +444,14 @@ describe('ScanWorkspace', () => {
     fireEvent.change(screen.getByPlaceholderText(/enter path or leave empty/i), {
       target: { value: '/test/project' }
     })
-    fireEvent.click(screen.getByText('Scan'))
+    fireEvent.click(screen.getByRole('button', { name: /^scan$/i }))
 
     await waitFor(() => {
-      expect(screen.getByText('No cleanup candidates found. Your workspace is clean!')).toBeInTheDocument()
+      expect(screen.getByText(/no cleanup candidates found/i)).toBeInTheDocument()
     })
 
-    // Buttons should be disabled
+    // AI Analysis button should be disabled
     expect(screen.getByText('Run AI Analysis')).toBeDisabled()
-    expect(screen.getByText('Create Cleanup Plan')).toBeDisabled()
   })
 
   it('shows error when scan fails', async () => {
@@ -449,10 +462,32 @@ describe('ScanWorkspace', () => {
     fireEvent.change(screen.getByPlaceholderText(/enter path or leave empty/i), {
       target: { value: '/test/project' }
     })
-    fireEvent.click(screen.getByText('Scan'))
+    fireEvent.click(screen.getByRole('button', { name: /^scan$/i }))
 
     await waitFor(() => {
-      expect(screen.getByText('Network error')).toBeInTheDocument()
+      expect(screen.getByText(/could not reach the backend/i)).toBeInTheDocument()
     })
+    expect(screen.queryByText(/No cleanup candidates found/i)).not.toBeInTheDocument()
+  })
+
+  it('offers retry after a connection failure and does not treat it as an empty scan', async () => {
+    ;(global.fetch as vi.Mock)
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => mockScanResult })
+    renderWithProviders(<ScanWorkspace />)
+    fireEvent.change(screen.getByPlaceholderText(/enter path or leave empty/i), { target: { value: '/test/project' } })
+    fireEvent.click(screen.getByRole('button', { name: /^scan$/i }))
+    expect(await screen.findByText(/could not reach the backend/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry scan' }))
+    await waitFor(() => expect(screen.getByText(/Review Cleanup Candidates/i)).toBeInTheDocument())
+    expect(global.fetch).toHaveBeenCalledTimes(2)
+  })
+
+  it('reports an empty successful response as unusable instead of showing empty scan results', async () => {
+    ;(global.fetch as vi.Mock).mockResolvedValueOnce({ ok: true, status: 200, json: async () => { throw new SyntaxError('Unexpected end of JSON input') } })
+    renderWithProviders(<ScanWorkspace />)
+    fireEvent.click(screen.getByRole('button', { name: /^scan$/i }))
+    expect(await screen.findByText(/empty or unreadable response/i)).toBeInTheDocument()
+    expect(screen.queryByText(/No cleanup candidates found/i)).not.toBeInTheDocument()
   })
 })

@@ -338,6 +338,10 @@ async def generate_plan_from_scan(request: dict, default_risk_level: str = "SAFE
             status_code=403,
             detail=f"Successful Nebius inference is required to generate a cleanup plan (provider: {analysis.provider_name}).",
         )
+    from ai.routes import take_verified_analysis
+    verified = take_verified_analysis(analysis.analysis_id or "", Path(project_path).resolve())
+    if not verified:
+        raise HTTPException(status_code=403, detail="Verified Nebius analysis is unavailable or expired.")
 
     # Generate plan from AI-analyzed candidates
     path = Path(project_path).resolve()
@@ -354,7 +358,7 @@ async def generate_plan_from_scan(request: dict, default_risk_level: str = "SAFE
                 "reason": c["reason"],
                 "size_bytes": c["size_bytes"],
             }
-            for c in analysis.candidates if c["action"] == "DELETE"
+            for c in verified["candidates"] if c["action"] == "DELETE"
         ],
         default_risk_level=RiskLevel(default_risk_level),
     )

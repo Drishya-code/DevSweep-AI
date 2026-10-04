@@ -1,91 +1,112 @@
-import { cn } from '../utils/helpers'
-import { FolderGit2, Search, Plus, ChevronDown, ChevronUp, Eye, Trash2, Clock } from 'lucide-react'
+import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { AlertCircle, CheckCircle, FolderGit2, RefreshCw } from 'lucide-react'
 import { useDevSweep } from '../context/DevSweepContext'
+import { useViewMode } from '../context/ViewModeContext'
+import { Button } from '../components/ui/Button'
+import { Card, CardDescription, CardHeader, CardTitle } from '../components/ui/Card'
+import { DataTable, type Column } from '../components/ui/DataTable'
+import { EmptyState } from '../components/ui/EmptyState'
+import { ErrorAlert } from '../components/ui/ErrorAlert'
+import { LoadingState } from '../components/ui/LoadingState'
+import { cn } from '../utils/helpers'
+import { apiErrorMessage, requestJson } from '../utils/api'
+import type { ScanResponse } from '../types/api'
+
+function projectName(path: string) {
+  return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path
+}
 
 export function Projects() {
-  const { scanHistory, currentProject, setCurrentProject } = useDevSweep()
+  const { scanHistory, currentProject, setCurrentProject, addScanToHistory } = useDevSweep()
+  const { viewMode } = useViewMode()
+  const navigate = useNavigate()
+  const [selectingPath, setSelectingPath] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [retryProject, setRetryProject] = useState<ScanResponse | null>(null)
+
+  // addScanToHistory prepends each result; retain the newest scan for each path.
+  const projects = scanHistory.reduce<ScanResponse[]>((unique, scan) => {
+    if (!unique.some(item => item.project_path === scan.project_path)) unique.push(scan)
+    return unique
+  }, [])
+
+  const refreshAndSelect = async (project: ScanResponse) => {
+    if (selectingPath) return
+    setSelectingPath(project.project_path)
+    setError(null)
+    setRetryProject(project)
+    try {
+      const refreshed = await requestJson<ScanResponse>('/api/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: project.project_path }),
+      })
+      setCurrentProject(refreshed)
+      addScanToHistory(refreshed)
+      navigate('/')
+    } catch (selectError) {
+      setError(apiErrorMessage(selectError, viewMode))
+    } finally {
+      setSelectingPath(null)
+    }
+  }
+
+  const columns: Column<ScanResponse>[] = [
+    { key: 'name', header: 'Project', render: scan => <div className="min-w-48"><p className="font-medium">{projectName(scan.project_path)}</p><p className="mt-1 break-all font-mono text-xs text-devsweep-textMuted">{scan.project_path}</p></div> },
+    { key: 'type', header: 'Type', render: scan => <span>{scan.project_type}</span> },
+    { key: 'framework', header: 'Framework', render: scan => <span>{scan.framework || 'Not detected'}</span> },
+    { key: 'metadata', header: 'Metadata', render: scan => <div className="space-y-1 text-xs"><p>{scan.language || 'Language not detected'}</p><p>{scan.package_manager || 'Package manager not detected'}</p></div> },
+    { key: 'scan', header: 'Latest scan data', render: scan => <div className="space-y-1 text-xs"><p>{scan.cleanup_candidates.length} candidates</p><p>{scan.total_recoverable_human} recoverable</p><p>{scan.has_git ? (scan.git_clean ? 'Git clean at scan' : 'Uncommitted at scan') : 'Git not detected'}</p></div> },
+    { key: 'actions', header: 'Action', align: 'right', render: scan => <Button size="sm" variant="secondary" onClick={() => refreshAndSelect(scan)} disabled={Boolean(selectingPath)} loading={selectingPath === scan.project_path} icon={<RefreshCw className="h-4 w-4" />}>Refresh & select</Button> },
+  ]
 
   return (
     <div className="space-y-6 animate-in">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold">Projects</h1>
-          <p className="text-devsweep-textSecondary mt-1">Manage and track your scanned projects</p>
-        </div>
-        <button className="px-4 py-2 bg-devsweep-accent text-devsweep-bg rounded-lg font-medium flex items-center gap-2 hover:bg-devsweep-accentHover transition-colors">
-          <Plus className="w-4 h-4" />
-          Add Project
-        </button>
-      </div>
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div><h1 className="text-2xl font-bold">Projects</h1><p className="mt-1 text-devsweep-textSecondary">Projects scanned during this session, using the latest scan available for each path.</p></div>
+        <Button onClick={() => navigate('/scan')} icon={<FolderGit2 className="h-4 w-4" />}>Open scan workspace</Button>
+      </header>
 
-      {scanHistory.length === 0 ? (
-        <div className="bg-devsweep-bgSecondary border border-devsweep-border rounded-xl p-12 text-center">
-          <FolderGit2 className="w-16 h-16 mx-auto mb-4 text-devsweep-textMuted opacity-50" />
-          <h3 className="text-lg font-medium mb-2">No projects scanned yet</h3>
-          <p className="text-devsweep-textMuted mb-6">Scan a workspace to add your first project</p>
-          <button className="px-6 py-3 bg-devsweep-accent text-devsweep-bg rounded-lg font-medium hover:bg-devsweep-accentHover transition-colors">
-            Scan Workspace
-          </button>
-        </div>
+      {error && <ErrorAlert title="Project could not be selected" message={error} dismissible onDismiss={() => setError(null)} action={retryProject ? { label: 'Retry', onClick: () => void refreshAndSelect(retryProject) } : undefined} />}
+      {selectingPath && <Card role="status" padding="sm"><LoadingState variant="inline" text={`Checking access and refreshing ${selectingPath}…`} /></Card>}
+
+      {projects.length === 0 ? (
+        <Card padding="none"><EmptyState illustration="project" title="No projects scanned yet" description="Scanned projects appear here for this session. No persistent project registry is available." action={{ label: 'Scan a project', onClick: () => navigate('/scan') }} /></Card>
+      ) : viewMode === 'technical' ? (
+        <>
+          <p className="text-sm text-devsweep-textSecondary">Technical details reflect scan responses only. Paths are refreshed before selection; inaccessible paths return an error and are not selected.</p>
+          <DataTable data={projects} columns={columns} keyExtractor={scan => scan.project_path} emptyState={<EmptyState title="No projects scanned" />} />
+        </>
       ) : (
-        <div className="bg-devsweep-bgSecondary border border-devsweep-border rounded-xl overflow-hidden">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-devsweep-border bg-devsweep-bgTertiary/50">
-                <th className="px-4 py-3 text-left text-xs font-semibold text-devsweep-textMuted uppercase tracking-wider">Project</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-devsweep-textMuted uppercase tracking-wider">Type</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-devsweep-textMuted uppercase tracking-wider">Framework</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-devsweep-textMuted uppercase tracking-wider">Recoverable</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-devsweep-textMuted uppercase tracking-wider">Status</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-devsweep-textMuted uppercase tracking-wider">Last Scan</th>
-                <th className="px-4 py-3 text-right text-xs font-semibold text-devsweep-textMuted uppercase tracking-wider">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {scanHistory.map((scan, i) => (
-                <tr key={i} className="border-b border-devsweep-border/50 hover:bg-devsweep-bgTertiary/50 transition-colors">
-                  <td className="px-4 py-3">
-                    <div>
-                      <p className="font-medium text-sm truncate max-w-[250px]">{scan.project_path.split('/').pop() || scan.project_path}</p>
-                      <p className="text-xs text-devsweep-textMuted font-mono">{scan.project_path}</p>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="px-2 py-1 text-xs rounded-full bg-devsweep-bgTertiary text-devsweep-textSecondary font-mono">{scan.project_type}</span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="px-2 py-1 text-xs rounded-full bg-devsweep-accent/10 text-devsweep-accent font-mono">{scan.framework}</span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="font-mono text-sm text-devsweep-success">{scan.total_recoverable_human}</span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={cn('px-2 py-1 text-xs rounded-full font-medium',
-                      scan.git_clean ? 'bg-devsweep-success/10 text-devsweep-success' : 'bg-devsweep-warning/10 text-devsweep-warning'
-                    )}>
-                      {scan.git_clean ? 'Clean' : 'Uncommitted'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-devsweep-textSecondary text-sm">Just now</td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      <button className="p-2 hover:bg-devsweep-bgTertiary rounded-lg transition-colors" title="View details">
-                        <Eye className="w-4 h-4 text-devsweep-textMuted" />
-                      </button>
-                      <button 
-                        onClick={() => setCurrentProject(scan)}
-                        className="p-2 hover:bg-devsweep-bgTertiary rounded-lg transition-colors font-medium text-sm text-devsweep-accent"
-                      >
-                        Select
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          {projects.map(project => {
+            const isSelected = currentProject?.project_path === project.project_path
+            return (
+              <Card key={project.project_path} className={cn(isSelected && 'border-devsweep-accent/50')}>
+                <CardHeader className="mb-3 flex flex-row items-start justify-between gap-3">
+                  <div className="min-w-0"><CardTitle as="h2" className="break-words">{projectName(project.project_path)}</CardTitle><CardDescription className="break-all font-mono">{project.project_path}</CardDescription></div>
+                  {isSelected && <span className="shrink-0 rounded-full bg-devsweep-accent/10 px-2 py-1 text-xs font-medium text-devsweep-accent">Selected</span>}
+                </CardHeader>
+                <div className="space-y-3 text-sm">
+                  <div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-devsweep-bgTertiary px-2 py-1 text-xs">{project.project_type}</span>{project.framework && project.framework !== 'unknown' && <span className="rounded-full bg-devsweep-accent/10 px-2 py-1 text-xs text-devsweep-accent">{project.framework}</span>}</div>
+                  <p className="text-devsweep-textSecondary">{project.cleanup_candidates.length} cleanup candidate{project.cleanup_candidates.length === 1 ? '' : 's'} · {project.total_recoverable_human} identified as recoverable in the last scan.</p>
+                  <div className={cn('flex items-start gap-2 rounded-lg border p-3 text-xs', !project.has_git ? 'border-devsweep-border bg-devsweep-bgTertiary/50 text-devsweep-textSecondary' : project.git_clean ? 'border-devsweep-success/20 bg-devsweep-success/10 text-devsweep-success' : 'border-devsweep-warning/20 bg-devsweep-warning/10 text-devsweep-warning')}>
+                    {!project.has_git ? <AlertCircle className="h-4 w-4 shrink-0" /> : project.git_clean ? <CheckCircle className="h-4 w-4 shrink-0" /> : <AlertCircle className="h-4 w-4 shrink-0" />}
+                    {project.has_git ? (project.git_clean ? 'Git working tree was clean at scan time.' : 'Uncommitted Git changes were present at scan time.') : 'Git metadata was not detected.'}
+                  </div>
+                </div>
+                <div className="mt-4 flex justify-end"><Button size="sm" variant={isSelected ? 'primary' : 'secondary'} onClick={() => refreshAndSelect(project)} disabled={Boolean(selectingPath)} loading={selectingPath === project.project_path} icon={<RefreshCw className="h-4 w-4" />}>Refresh & select</Button></div>
+              </Card>
+            )
+          })}
         </div>
       )}
+      {projects.length > 0 && viewMode === 'technical' && currentProject && <Card><CardTitle as="h2">Selected project details</CardTitle><div className="mt-3 space-y-2 text-sm"><Detail label="Path" value={currentProject.project_path} /><Detail label="Project type" value={currentProject.project_type} /><Detail label="Framework" value={currentProject.framework} /><Detail label="Language" value={currentProject.language} /><Detail label="Package manager" value={currentProject.package_manager} /><Detail label="Git detected" value={currentProject.has_git ? 'Yes' : 'No'} />{currentProject.has_git && <Detail label="Git working tree at scan" value={currentProject.git_clean ? 'Clean' : 'Uncommitted changes'} />}<Detail label="Recoverable bytes reported" value={`${currentProject.total_recoverable_bytes} (${currentProject.total_recoverable_human})`} /><Detail label="Protected paths detected" value={currentProject.protected_paths.join(', ') || 'None reported'} />{currentProject.notes && <p className="pt-2 text-devsweep-textSecondary">{currentProject.notes}</p>}</div></Card>}
     </div>
   )
+}
+
+function Detail({ label, value }: { label: string; value: string }) {
+  return <div className="flex flex-col gap-1 sm:flex-row sm:justify-between sm:gap-4"><span className="shrink-0 text-devsweep-textSecondary">{label}</span><span className="break-all text-right font-mono">{value}</span></div>
 }

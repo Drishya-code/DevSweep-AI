@@ -1401,4 +1401,74 @@ class TestNebiusInferenceGate:
             })
             assert response.status_code == 403
 
+    def test_analysis_ids_expire_and_remain_one_use_and_project_scoped(self):
+        import ai.routes as ai_routes
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            analysis = asyncio.run(ai_analyze(AnalyzeRequest(project_path=str(root))))
+            record = ai_routes._verified_analyses[analysis.analysis_id]
+            record["expires_at"] = ai_routes.time.monotonic() - 1
+            from fastapi.testclient import TestClient
+            from main import app
+            response = TestClient(app).post("/api/cleanup/plan", json={
+                "project_path": str(root), "analysis_id": analysis.analysis_id, "items": [],
+            })
+            assert response.status_code == 403
+            assert analysis.analysis_id not in ai_routes._verified_analyses
+
+            analysis = asyncio.run(ai_analyze(AnalyzeRequest(project_path=str(root))))
+            other_project = root / "other"
+            other_project.mkdir()
+            assert ai_routes.take_verified_analysis(analysis.analysis_id, other_project) is None
+            assert analysis.analysis_id not in ai_routes._verified_analyses
+
+            analysis = asyncio.run(ai_analyze(AnalyzeRequest(project_path=str(root))))
+            assert ai_routes.take_verified_analysis(analysis.analysis_id, root) is not None
+            assert ai_routes.take_verified_analysis(analysis.analysis_id, root) is None
+
+    def test_generate_plan_consumes_its_verified_analysis_id(self):
+        import ai.routes as ai_routes
+        from cleanup.routes import _cleanup_plans, _pre_cleanup_snapshots
+        from fastapi.testclient import TestClient
+        from main import app
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self._project(root)
+            response = TestClient(app).post("/api/cleanup/generate-plan", json={"project_path": str(root)})
+            assert response.status_code == 200
+            assert ai_routes._verified_analyses == {}
+            plan_id = response.json()["plan_id"]
+            _cleanup_plans.pop(plan_id, None)
+            _pre_cleanup_snapshots.pop(plan_id, None)
+
+    def test_cleanup_plan_ignores_client_supplied_action_and_risk(self):
+        from fastapi.testclient import TestClient
+        from cleanup.routes import _cleanup_plans, _pre_cleanup_snapshots
+        from main import app
+        client = TestClient(app)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self._project(root)
+            analysis = client.post("/api/ai/analyze", json={"project_path": str(root)}).json()
+            response = client.post("/api/cleanup/plan", json={
+                "project_path": str(root),
+                "analysis_id": analysis["analysis_id"],
+                "items": [{
+                    "path": "cache", "action": "KEEP", "risk": "DANGEROUS",
+                    "ai_risk": "SAFE", "effective_risk": "SAFE",
+                    "reason": "client supplied", "estimated_bytes": 1,
+                }],
+            })
+            assert response.status_code == 200
+            item = response.json()["items"][0]
+            assert item["action"] == "DELETE"
+            assert item["risk"] == "CAUTION"
+            assert item["ai_risk"] == "CAUTION"
+            assert item["effective_risk"] == "CAUTION"
+            assert item["estimated_bytes"] == 12_000_000
+            assert response.json()["requires_approval"] is True
+            plan_id = response.json()["plan_id"]
+            _cleanup_plans.pop(plan_id, None)
+            _pre_cleanup_snapshots.pop(plan_id, None)
+
 

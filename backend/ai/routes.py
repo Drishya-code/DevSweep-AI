@@ -6,6 +6,7 @@ from typing import List, Optional, Dict, Any
 import uuid
 import json
 import logging
+import time
 
 from ai.factory import get_ai_provider
 from ai.nebius_provider import NebiusProvider
@@ -56,11 +57,16 @@ class AnalyzeResponse(BaseModel):
 # Short-lived, in-process proof that the submitted candidates came from successful
 # Nebius inference. Cleanup plan creation consumes this server-side result.
 _verified_analyses: Dict[str, Dict[str, Any]] = {}
+VERIFIED_ANALYSIS_TTL_SECONDS = 15 * 60
 
 
 def take_verified_analysis(analysis_id: str, project_path: Path) -> Optional[Dict[str, Any]]:
     result = _verified_analyses.pop(analysis_id, None)
-    if not result or Path(result["project_path"]).resolve() != project_path.resolve():
+    if (
+        not result
+        or result.get("expires_at", 0) <= time.monotonic()
+        or Path(result["project_path"]).resolve() != project_path.resolve()
+    ):
         return None
     return result
 
@@ -275,6 +281,7 @@ Return JSON:
         _verified_analyses[analysis_id] = {
             "project_path": str(Path(request.project_path).resolve()),
             "candidates": final_candidates,
+            "expires_at": time.monotonic() + VERIFIED_ANALYSIS_TTL_SECONDS,
         }
 
     return AnalyzeResponse(

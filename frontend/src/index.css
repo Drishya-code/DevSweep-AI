@@ -7,6 +7,65 @@
   --font-mono: 'JetBrains Mono', 'Fira Code', Consolas, monospace;
 }
 
+/* RGB channels let Tailwind opacity utilities work with
+   the same semantic values as the theme switch. Dark remains the default. */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --devsweep-bg: 13 17 23;
+  --devsweep-bgSecondary: 22 27 34;
+  --devsweep-bgTertiary: 33 38 45;
+  --devsweep-bgHover: 48 54 61;
+  --devsweep-border: 48 54 61;
+  --devsweep-borderHover: 72 79 88;
+  --devsweep-borderFocus: 88 166 255;
+  --devsweep-text: 240 246 252;
+  --devsweep-textSecondary: 139 148 158;
+  --devsweep-textMuted: 139 148 158;
+  --devsweep-textInverse: 13 17 23;
+  --devsweep-accent: 88 166 255;
+  --devsweep-accentHover: 121 184 255;
+  --devsweep-accentLight: 31 58 95;
+  --devsweep-success: 63 185 80;
+  --devsweep-successLight: 15 46 26;
+  --devsweep-warning: 210 153 34;
+  --devsweep-warningLight: 61 46 10;
+  --devsweep-danger: 248 81 73;
+  --devsweep-dangerHover: 255 123 114;
+  --devsweep-dangerLight: 61 26 26;
+  --devsweep-info: 88 166 255;
+  --devsweep-infoLight: 31 58 95;
+  --devsweep-overlay: 0 0 0;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+  --devsweep-bg: 255 255 255;
+  --devsweep-bgSecondary: 246 248 250;
+  --devsweep-bgTertiary: 234 238 242;
+  --devsweep-bgHover: 243 244 246;
+  --devsweep-border: 208 215 222;
+  --devsweep-borderHover: 139 148 158;
+  --devsweep-borderFocus: 9 105 218;
+  --devsweep-text: 31 35 40;
+  --devsweep-textSecondary: 101 109 118;
+  --devsweep-textMuted: 89 99 110;
+  --devsweep-textInverse: 255 255 255;
+  --devsweep-accent: 9 105 218;
+  --devsweep-accentHover: 8 96 202;
+  --devsweep-accentLight: 219 234 254;
+  --devsweep-success: 26 127 55;
+  --devsweep-successLight: 220 252 231;
+  --devsweep-warning: 154 103 0;
+  --devsweep-warningLight: 254 243 199;
+  --devsweep-danger: 207 34 46;
+  --devsweep-dangerHover: 164 14 38;
+  --devsweep-dangerLight: 254 226 226;
+  --devsweep-info: 5 80 174;
+  --devsweep-infoLight: 219 234 254;
+  --devsweep-overlay: 15 23 42;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -18,6 +77,11 @@ html {
 body {
   @apply bg-devsweep-bg text-devsweep-text min-h-screen;
   font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+}
+
+[data-theme="light"] body {
+  background-color: rgb(var(--devsweep-bg));
+  color: rgb(var(--devsweep-text));
 }
 
 ::-webkit-scrollbar {
@@ -44,20 +108,5 @@ body {
 @layer utilities {
   .text-balance {
     text-wrap: balance;
-  }
-  
-  .animate-in {
-    animation: animate-in 0.2s ease-out forwards;
-  }
-  
-  @keyframes animate-in {
-    from {
-      opacity: 0;
-      transform: translateY(4px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
   }
 }

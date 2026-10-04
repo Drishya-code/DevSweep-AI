@@ -1,4 +1,5 @@
 import { NavLink, useLocation } from 'react-router-dom'
+import { useEffect, useRef } from 'react'
 import { cn } from '../utils/helpers'
 import {
   LayoutDashboard,
@@ -10,6 +11,7 @@ import {
   Bot,
   Settings,
   Sparkles,
+  X,
 } from 'lucide-react'
 
 const navigation = [
@@ -23,12 +25,39 @@ const navigation = [
   { name: 'Settings', href: '/settings', icon: Settings },
 ]
 
-export function Sidebar() {
+export function Sidebar({ mobileOpen = false, onNavigate, onClose }: { mobileOpen?: boolean; onNavigate?: () => void; onClose?: () => void }) {
   const location = useLocation()
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+  const dialogRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    if (!mobileOpen) return
+    closeButtonRef.current?.focus()
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose?.()
+      if (event.key === 'Tab' && dialogRef.current) {
+        const focusable = dialogRef.current.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])')
+        const first = focusable.item(0)
+        const last = focusable.item(focusable.length - 1)
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault()
+          last?.focus()
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault()
+          first?.focus()
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [mobileOpen, onClose])
 
   return (
-    <aside className="w-64 bg-devsweep-bgSecondary border-r border-devsweep-border flex flex-col h-full">
+    <>
+    {mobileOpen && <button type="button" className="fixed inset-0 z-modal bg-devsweep-overlay/60 lg:hidden" onClick={onClose} aria-label="Dismiss navigation backdrop" />}
+    <aside ref={dialogRef} id="primary-navigation" role={mobileOpen ? 'dialog' : undefined} aria-modal={mobileOpen ? true : undefined} aria-label="Primary navigation" className={cn('w-64 bg-devsweep-bgSecondary border-r border-devsweep-border flex-col h-full', mobileOpen ? 'fixed inset-y-0 left-0 z-modal flex shadow-xl lg:static lg:z-auto lg:shadow-none' : 'hidden lg:flex')}>
       <div className="p-4 border-b border-devsweep-border">
+        {mobileOpen && <button ref={closeButtonRef} type="button" onClick={onClose} className="float-right rounded-lg p-2 text-devsweep-textSecondary hover:bg-devsweep-bgTertiary hover:text-devsweep-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-devsweep-accent lg:hidden" aria-label="Close navigation menu"><X className="h-5 w-5" aria-hidden="true" /></button>}
         <NavLink to="/" className="flex items-center gap-3">
           <div className="w-8 h-8 bg-devsweep-accent rounded-lg flex items-center justify-center">
             <Sparkles className="w-5 h-5 text-devsweep-bg" />
@@ -48,8 +77,9 @@ export function Sidebar() {
             <NavLink
               key={item.name}
               to={item.href}
+              onClick={onNavigate}
               className={cn(
-                'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-devsweep-accent focus-visible:ring-offset-2 focus-visible:ring-offset-devsweep-bgSecondary',
                 isActive
                   ? 'bg-devsweep-accent/10 text-devsweep-accent border border-devsweep-accent/20'
                   : 'text-devsweep-textSecondary hover:text-devsweep-text hover:bg-devsweep-bgTertiary'
@@ -68,5 +98,6 @@ export function Sidebar() {
         </div>
       </div>
     </aside>
+    </>
   )
 }
