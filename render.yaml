@@ -1,0 +1,34 @@
+services:
+  - type: web
+    name: devsweep-ai
+    runtime: docker
+    branch: codex/hosted-demo-real-workspace
+    plan: starter
+    region: oregon
+    numInstances: 1
+    healthCheckPath: /health
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    disk:
+      name: devsweep-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: NEBIUS_API_KEY
+        sync: false
+      - key: NEBIUS_BASE_URL
+        value: https://api.tokenfactory.nebius.com/v1/
+      - key: NEBIUS_MODEL
+        value: nvidia/nemotron-3-super-120b-a12b
+      - key: DEVSWEEP_HOSTED_DEMO
+        value: "true"
+      - key: DEVSWEEP_DEMO_MODE
+        value: "true"
+      - key: DEVSWEEP_DB_PATH
+        value: /data/devsweep.db
+      - key: DEVSWEEP_DEMO_ROOT
+        value: /data/demo-workspaces
+      - key: BACKEND_HOST
+        value: 0.0.0.0
+      - key: BACKEND_PORT
+        value: "8000"

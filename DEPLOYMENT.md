@@ -18,13 +18,17 @@ docker run --rm -p 8000:8000 \
 
 Open the container's HTTPS URL in deployment, or `http://localhost:8000` locally. The sample workspace data and application DB live under `/data`; mount a durable volume there. `/health` returns only a safe health status. Hosted mode hides interactive API docs and denies general scan, restore, history, and filesystem routes.
 
-## Deploy publicly
+## Deploy on Render
 
-1. Use a container host that builds from the repository's root `Dockerfile` and provisions HTTPS.
-2. Expose the assigned `PORT` (the container honors it, default 8000) and set health-check path `/health`.
-3. Set `NEBIUS_API_KEY` as a protected runtime secret. Optionally set `NEBIUS_BASE_URL` and `NEBIUS_MODEL` to values enabled for that key.
-4. Mount a persistent volume at `/data`. Back up and restrict access to this volume: it contains isolated synthetic-session state and cleanup restore data.
-5. Deploy and verify `/health`, the AI metadata call, separate browser sessions, cleanup/undo/reset, and the HTTPS folder picker. No live deployment has been created by this repository task.
+The root `render.yaml` defines a single-instance Docker web service, `/health` check, 1 GB persistent disk at `/data`, and a server-only `NEBIUS_API_KEY` prompt. Render's persistent disks require a paid web-service plan; the Blueprint sets `starter`.
+
+1. Sign in to Render and create a **New Blueprint Instance**.
+2. Connect the existing `Drishya-code/DevSweep-AI` repository and choose branch `codex/hosted-demo-real-workspace`.
+3. Review the Blueprint resources and enter the Nebius Token Factory key when Render prompts for `NEBIUS_API_KEY`. Do not add it to the repo or as a `VITE_*` value.
+4. Create the Blueprint and wait for the Docker build and `/health` check to pass. Render provisions the public `onrender.com` HTTPS address.
+5. Open the public URL, confirm `/health` returns `{"status":"healthy"}`, run the Nebius metadata analysis, and verify isolated sessions, preview/confirmation, undo/reset, and folder selection in a supported browser.
+
+The GitHub branch is pushed, but no Render account/token is connected in this environment; no public deployment has been created or tested. The hosting owner must complete the dashboard flow above. Render prompts for `sync: false` secrets only during initial Blueprint creation; add or rotate secrets through the service's Environment page afterward. See [Render Blueprint documentation](https://render.com/docs/blueprint-spec), [persistent disks](https://render.com/docs/disks), and [health checks](https://render.com/docs/health-checks).
 
 The sample demo creates a random UUID per browser profile and stores each fixture in its own directory under `DEVSWEEP_DEMO_ROOT`. Treat the session ID as a bearer identifier. Requests are size limited and the public AI analysis endpoints have a process-local per-IP rate limit. For deployments with multiple replicas, configure equivalent rate limiting at the ingress/shared gateway and use storage with the required consistency semantics. Never share one writable local volume between untrusted containers.
 
