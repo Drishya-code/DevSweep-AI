@@ -9,7 +9,7 @@ import { ErrorAlert } from '../components/ui/ErrorAlert'
 import { LoadingState } from '../components/ui/LoadingState'
 import { RiskBadge } from '../components/ui/RiskBadge'
 import { cn, formatBytes } from '../utils/helpers'
-import { apiErrorMessage, requestJson } from '../utils/api'
+import { apiErrorMessage, apiUrl, requestJson } from '../utils/api'
 
 type Risk = 'SAFE' | 'CAUTION' | 'DANGEROUS'
 type PlanItem = {
@@ -121,7 +121,7 @@ export function CleanupPlans() {
     setError(null)
     setApproved(false)
     try {
-      const response = await fetch('/api/cleanup/generate-plan', {
+      const response = await fetch(apiUrl('/api/cleanup/generate-plan'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -152,9 +152,8 @@ export function CleanupPlans() {
 
   const verifyProject = async (planId: string) => {
     if (!currentProject) throw new Error('No project is selected for verification')
-    const verifyUrl = new URL('/api/cleanup/verify', window.location.origin)
-    verifyUrl.searchParams.set('project_type', currentProject.project_type)
-    const response = await fetch(verifyUrl.pathname + verifyUrl.search, {
+    const verifyUrl = new URLSearchParams({ project_type: currentProject.project_type })
+    const response = await fetch(`${apiUrl('/api/cleanup/verify')}?${verifyUrl.toString()}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -176,7 +175,7 @@ export function CleanupPlans() {
     setError(null)
     setVerificationError(null)
     try {
-      const response = await fetch('/api/cleanup/execute', {
+      const response = await fetch(apiUrl('/api/cleanup/execute'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ plan_id: plan.plan_id, approved }),

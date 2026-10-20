@@ -14,6 +14,7 @@ import {
   X,
 } from 'lucide-react'
 import { ChatMessage } from '../types/api'
+import { apiUrl } from '../utils/api'
 
 const INITIAL_MESSAGES: ChatMessage[] = [
   {
@@ -76,7 +77,7 @@ export function AIAgent() {
 
     try {
       // Call real backend AI API
-      const res = await fetch('/api/ai/chat', {
+      const res = await fetch(apiUrl('/api/ai/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

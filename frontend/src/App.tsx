@@ -1,5 +1,5 @@
 import { Routes, Route } from 'react-router-dom'
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
 import { Dashboard } from './pages/Dashboard'
@@ -12,6 +12,12 @@ import { AIAgent } from './pages/AIAgent'
 import { Settings } from './pages/Settings'
 import { DevSweepProvider } from './context/DevSweepContext'
 import { ViewModeProvider } from './context/ViewModeContext'
+import { HostedDemo } from './pages/HostedDemo'
+import { requestJson } from './utils/api'
+import { RealWorkspace } from './pages/RealWorkspace'
+import { Link } from 'react-router-dom'
+
+type RuntimeConfig = { hosted_demo?: boolean }
 
 function Layout() {
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false)
@@ -27,6 +33,7 @@ function Layout() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/scan" element={<ScanWorkspace />} />
+            <Route path="/real-workspace" element={<RealWorkspace />} />
             <Route path="/plans" element={<CleanupPlans />} />
             <Route path="/history" element={<CleanupHistory />} />
             <Route path="/restore" element={<RestoreCenter />} />
@@ -40,6 +47,17 @@ function Layout() {
 }
 
 function App() {
+  const [runtime, setRuntime] = useState<RuntimeConfig | null>(null)
+  const [configError, setConfigError] = useState('')
+  useEffect(() => {
+    requestJson<RuntimeConfig>('/api/config')
+      .then(setRuntime)
+      .catch(error => setConfigError(error instanceof Error ? error.message : 'The DevSweep backend is unavailable.'))
+  }, [])
+
+  if (configError) return <main className="flex min-h-screen items-center justify-center bg-devsweep-bg p-6"><section role="alert" className="max-w-lg rounded-2xl border border-devsweep-border bg-devsweep-bgSecondary p-6"><h1 className="text-xl font-semibold text-devsweep-text">DevSweep backend unavailable</h1><p className="mt-2 text-devsweep-textMuted">{configError} Start the backend and check the API connection, then reload this page.</p></section></main>
+  if (!runtime) return <main className="flex min-h-screen items-center justify-center bg-devsweep-bg text-devsweep-text">Connecting to DevSweep…</main>
+  if (runtime.hosted_demo) return <ViewModeProvider><main className="min-h-screen overflow-y-auto bg-devsweep-bg p-4 sm:p-8"><nav className="mx-auto mb-6 flex max-w-5xl gap-4 text-sm"><Link className="text-devsweep-accent underline" to="/">Synthetic judge demo</Link><Link className="text-devsweep-accent underline" to="/real-workspace">Choose my folder</Link></nav><Routes><Route path="/" element={<HostedDemo />} /><Route path="/real-workspace" element={<RealWorkspace />} /></Routes></main></ViewModeProvider>
   return (
     <DevSweepProvider>
       <ViewModeProvider>

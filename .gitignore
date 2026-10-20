@@ -88,6 +88,12 @@ demo-project/.vite/
 demo-project/logs/
 demo-project/cache/
 
+# Public hosted-demo fixtures (the rest of demo-project build output stays ignored).
+!demo-project/dist/
+!demo-project/dist/demo.bundle.js
+!demo-project/logs/
+!demo-project/logs/build.log
+
 # Test outputs
 test-output/
 coverage/
@@ -97,3 +103,4 @@ coverage/
 *.pem
 .vercel
 .netlify
+/outputs/

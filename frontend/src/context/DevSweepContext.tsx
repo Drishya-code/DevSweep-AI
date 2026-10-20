@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
 import { ScanResponse } from '../types/api'
+import { apiUrl } from '../utils/api'
 
 interface DevSweepContextType {
   // State
@@ -34,21 +35,21 @@ export function DevSweepProvider({ children }: { children: ReactNode }) {
   const [cleanupHistory, setCleanupHistory] = useState<any[]>([])
   const [isScanning, setIsScanning] = useState(false)
   const [isCleaning, setIsCleaning] = useState(false)
-  const [aiProvider, setAiProvider] = useState('mock')
-  const [aiModel, setAiModel] = useState('devsweep-mock')
+  const [aiProvider, setAiProvider] = useState('unavailable')
+  const [aiModel, setAiModel] = useState('unknown')
   const [realInferenceAvailable, setRealInferenceAvailable] = useState(false)
   const [demoMode, setDemoMode] = useState(false)
   const [currentPlan, setCurrentPlanState] = useState<any>(null)
 
   // Load config on mount
   useEffect(() => {
-    fetch('/api/config')
+    fetch(apiUrl('/api/config'))
       .then(res => res.json())
       .then(data => {
         setDemoMode(data.demo_mode)
       })
       .catch(() => {})
-    fetch('/api/ai/models')
+    fetch(apiUrl('/api/ai/models'))
       .then(res => {
         if (!res.ok) throw new Error('AI provider unavailable')
         return res.json()

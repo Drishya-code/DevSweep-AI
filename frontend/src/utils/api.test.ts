@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { apiErrorMessage, requestJson } from './api'
+import { apiErrorMessage, apiUrl, requestJson } from './api'
+
+describe('API origin configuration', () => {
+  it('uses same-origin API paths when no production API base is configured', () => {
+    expect(apiUrl('/api/demo/workspace')).toBe('/api/demo/workspace')
+  })
+})
 
 describe('requestJson', () => {
   it('classifies connection failures and preserves the underlying diagnostic', async () => {

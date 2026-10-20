@@ -3,6 +3,12 @@
 > **Clean your workspace. Keep your project. Restore it anytime.**
 DevSweep AI is an intelligent developer workspace management tool that helps you reclaim storage space from regenerable artifacts (node_modules, build outputs, caches, virtual environments) while keeping your source code, Git history, and project configuration safe.
 
+## Public hosted demo
+
+Hosted mode provides a persistent synthetic workspace isolated by a random session id. Judges can inspect, preview, confirm real fixture cleanup, undo, and reset. A separate real-workspace page uses the browser's native folder picker where supported; only relative metadata reaches the server, and all approved file changes happen in the browser. The hosted API never exposes unrestricted server filesystem access. AI analysis requires the server-side Nebius Token Factory inference key; missing credentials fail clearly rather than returning mock output.
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for Docker, hosting, storage, and credential instructions. No public deployment URL is currently claimed.
+
 ## Problem
 
 Development projects accumulate massive amounts of regenerable files:
@@ -108,10 +114,10 @@ The server re-validates every deletion target against a fresh scanner run at exe
 
 This project is built for the **Nebius x NVIDIA Global AI Hackathon**.
 
-- **Nebius Token Factory** endpoint: `https://api.tokenfactory.us-central1.nebius.com/v1/`
+- **Nebius Token Factory** inference endpoint: `https://api.tokenfactory.nebius.com/v1/`
 - **Model**: `nvidia/nemotron-3-super-120b-a12b`
 - Real runtime calls to Nebius Token Factory in the analysis and chat endpoints
-- AI provider abstraction (NebiusProvider / MockProvider) — mock is used only when no API key is configured
+- AI provider abstraction (NebiusProvider / MockProvider) — mock is available for explicit test injection; runtime missing-key behavior is a configuration error
 
 ## Quick Start
 
@@ -132,14 +138,17 @@ npm run dev
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `NEBIUS_API_KEY` | Nebius Token Factory API key | For real AI analysis |
-| `NEBIUS_BASE_URL` | API base URL (default: https://api.tokenfactory.us-central1.nebius.com/v1/) | No |
+| `NEBIUS_API_KEY` | Nebius Token Factory inference API key, backend only | Required for AI analysis |
+| `NEBIUS_BASE_URL` | API base URL (default: https://api.tokenfactory.nebius.com/v1/) | No |
 | `NEBIUS_MODEL` | Model name (default: nvidia/nemotron-3-super-120b-a12b) | No |
 | `DEVSWEEP_WORKSPACE_ROOT` | Root directory to scan (default: current dir) | No |
 | `DEVSWEEP_DB_PATH` | SQLite application-history file (default: `./data/devsweep.db`, relative to the configured workspace root) | No |
 | `DEVSWEEP_BACKUP_ROOT` | Verified content-backup directory (default: per-user application data directory; must be outside scanned project trees) | No |
 | `DEVSWEEP_DEMO_MODE` | Enable demo fixture (true/false) | No |
-| `BACKEND_HOST` | Loopback bind address (default: `127.0.0.1`; non-loopback values are rejected until remote authentication exists) | No |
+| `DEVSWEEP_HOSTED_DEMO` | Enable the public demo/browser-workspace route allowlist (default: false) | No |
+| `DEVSWEEP_CORS_ORIGINS` | Exact comma-separated origins when a separate frontend is used; empty is recommended for same-origin deployment | No |
+| `BACKEND_HOST` | Loopback bind address by default; non-loopback is allowed only with hosted-demo mode enabled | No |
+| `VITE_API_BASE_URL` | Optional frontend build-time API origin; empty means same-origin requests | No |
 
 ## Demo Mode
 
@@ -153,7 +162,7 @@ uvicorn main:app --reload        # from backend/
 
 ## Local Workspace Security
 
-The backend is local-first and binds to `127.0.0.1` by default. `BACKEND_HOST` accepts only `localhost` or a loopback IP address. Non-loopback/LAN binding is rejected because this application does not provide remote authentication. CORS restricts browser origins to local development origins; CORS is not authentication or authorization.
+The local backend is local-first and binds to `127.0.0.1` by default. `BACKEND_HOST` accepts only `localhost` or a loopback IP address in local mode. A non-loopback bind is permitted only when the server-enforced hosted-demo allowlist is active. In local mode, CORS restricts browser origins to local development origins; CORS is not authentication or authorization.
 
 Project paths are canonicalized by the backend. Paths inside `DEVSWEEP_WORKSPACE_ROOT` need no separate grant. External folders require an explicit, folder-scoped grant created by the local user through `POST /api/access/grants`.
 
@@ -227,6 +236,28 @@ DevSweepAI/
 | GET | `/api/cleanup/backups` | Verified backup items from completed cleanup operations |
 | POST | `/api/cleanup/restore` | Restore one verified item (requires project path and explicit approval) |
 | GET | `/api/cleanup/restore/history` | Persistent restore outcomes |
+| POST | `/api/demo/sessions` | Create an isolated synthetic demo session |
+| GET | `/api/demo/workspace` | List this session's synthetic files |
+| POST | `/api/demo/preview` | Preview selected synthetic files |
+| POST | `/api/demo/confirm` | Confirm and move synthetic artifacts into restore storage |
+| POST | `/api/demo/restore/{id}` | Restore this session's last cleanup |
+| POST | `/api/demo/reset` | Reset this session's fixture |
+| POST | `/api/demo/analyze` | Ask Nebius to analyze synthetic metadata |
+| POST | `/api/ai/metadata` | Analyze metadata from the user's browser-selected folder |
+
+Hosted mode exposes health/config, the explicitly listed demo session/workspace routes, browser metadata inference, and built frontend assets. The remainder of the API table applies to local mode.
+
+## Tests
+
+```bash
+# Backend (from backend/)
+python -m pytest -q
+
+# Frontend (from frontend/)
+npm ci
+npm test -- --run
+npm run build
+```
 
 ## License
 

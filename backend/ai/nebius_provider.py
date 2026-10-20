@@ -15,7 +15,7 @@ class NebiusProvider(AIProvider):
         model: str = "nvidia/nemotron-3-super-120b-a12b",
     ):
         self._api_key = api_key or os.getenv("NEBIUS_API_KEY")
-        self._base_url = base_url or os.getenv("NEBIUS_BASE_URL", "https://api.tokenfactory.us-central1.nebius.com/v1/")
+        self._base_url = base_url or os.getenv("NEBIUS_BASE_URL", "https://api.tokenfactory.nebius.com/v1/")
         self._model = model or os.getenv("NEBIUS_MODEL", "nvidia/nemotron-3-super-120b-a12b")
 
         if not self._api_key:
@@ -24,6 +24,8 @@ class NebiusProvider(AIProvider):
         self._client = AsyncOpenAI(
             api_key=self._api_key,
             base_url=self._base_url,
+            timeout=30.0,
+            max_retries=1,
         )
 
     @property

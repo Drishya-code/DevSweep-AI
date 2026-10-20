@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { cn } from '../utils/helpers'
+import { apiUrl } from '../utils/api'
 import { useDevSweep } from '../context/DevSweepContext'
 import {
   Database,
@@ -70,7 +71,7 @@ interface Section {
 export function Settings() {
     const { demoMode, setDemoMode } = useDevSweep()
     const [settings, setSettings] = useState<SettingsState>({
-        nebiusBaseUrl: 'https://api.tokenfactory.us-central1.nebius.com/v1/',
+        nebiusBaseUrl: 'https://api.tokenfactory.nebius.com/v1/',
         nebiusModel: 'nvidia/nemotron-3-super-120b-a12b',
         workspaceRoot: '',
         defaultRiskLevel: 'SAFE',
@@ -90,7 +91,7 @@ export function Settings() {
       setSettings(JSON.parse(stored))
     }
     // Load from env if available
-    fetch('/api/config')
+    fetch(apiUrl('/api/config'))
       .then(res => res.json())
       .then(data => {
         setSettings(prev => ({ ...prev, workspaceRoot: data.workspace_root || '' }))
@@ -117,7 +118,7 @@ export function Settings() {
           icon: Bot,
           description: 'Configure NVIDIA Nemotron via Nebius Token Factory. API key must be set in backend environment (NEBIUS_API_KEY).',
           fields: [
-            { key: 'nebiusBaseUrl', label: 'Base URL', type: 'text' as const, placeholder: 'https://api.tokenfactory.us-central1.nebius.com/v1/', icon: ExternalLink },
+            { key: 'nebiusBaseUrl', label: 'Base URL', type: 'text' as const, placeholder: 'https://api.tokenfactory.nebius.com/v1/', icon: ExternalLink },
             { key: 'nebiusModel', label: 'Model', type: 'select' as const, options: ['nvidia/nemotron-3-super-120b-a12b', 'nvidia/nemotron-3-5-lightning', 'nvidia/nemotron-4-ultra'], icon: Sparkles },
           ],
         },

@@ -19,6 +19,31 @@ from security.workspace_access import ProjectAuthorization, ProjectAccessError, 
 
 router = APIRouter(tags=["ai"])
 
+class MetadataAnalysisRequest(BaseModel):
+    files: List[Dict[str, Any]]
+
+@router.post("/metadata")
+async def analyze_metadata(request: MetadataAnalysisRequest):
+    """Analyze user-approved browser inventory metadata, never file contents."""
+    if len(request.files) > 500:
+        raise HTTPException(status_code=413, detail="Inventory is too large; select a smaller folder.")
+    for item in request.files:
+        if set(item) - {"path", "size_bytes", "modified"} or not isinstance(item.get("path"), str) or len(item["path"]) > 500 or not isinstance(item.get("size_bytes"), int):
+            raise HTTPException(status_code=400, detail="Invalid workspace metadata.")
+        if item["path"].startswith(("/", "\\")) or ".." in item["path"].replace("\\", "/").split("/"):
+            raise HTTPException(status_code=400, detail="Only relative workspace paths are accepted.")
+    try:
+        provider = get_ai_provider()
+        from ai.provider import ChatMessage as ProviderChatMessage
+        response = await provider.chat_completion([
+            ProviderChatMessage(role="system", content="Analyze only this user-selected workspace inventory metadata. Do not ask for or infer file contents. Recommend deletion only for recognizable regenerable artifacts such as node_modules, dist/build, __pycache__, .venv, *.log, coverage. Never recommend source, .git, configuration, credentials, databases, or unknown paths. Return JSON with recommendations array: path, action DELETE or KEEP, reason, risk SAFE or CAUTION."),
+            ProviderChatMessage(role="user", content=json.dumps(request.files, ensure_ascii=True)),
+        ])
+        return {"provider": provider.provider_name, "model": provider.model_name, "analysis": response.content}
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Metadata inference failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=502 if settings.NEBIUS_API_KEY else 503, detail="Nebius metadata analysis is unavailable. Check backend credentials and retry.") from exc
+
 
 class ChatMessage(BaseModel):
     role: str  # user, assistant, system
@@ -106,12 +131,6 @@ def format_bytes(bytes_val: int) -> str:
 @router.post("/chat", response_model=ChatResponse)
 async def ai_chat(request: ChatRequest):
     """Chat with the AI agent."""
-    try:
-        provider = get_ai_provider()
-    except Exception as e:
-        logging.getLogger(__name__).error("AI provider initialization failed: %s", type(e).__name__)
-        raise HTTPException(status_code=503, detail="Nebius provider configuration failed. Check backend configuration.") from e
-    
     # Build context - convert to provider ChatMessage format
     from ai.provider import ChatMessage as ProviderChatMessage
     
@@ -146,6 +165,12 @@ Total recoverable: {format_bytes(analysis.total_recoverable_bytes)}
     
     # Add current message
     messages.append(ProviderChatMessage(role="user", content=request.message))
+
+    try:
+        provider = get_ai_provider()
+    except Exception as e:
+        logging.getLogger(__name__).error("AI provider initialization failed: %s", type(e).__name__)
+        raise HTTPException(status_code=503, detail="Nebius provider configuration failed. Check backend configuration.") from e
     
     try:
         response = await provider.chat_completion(messages)
